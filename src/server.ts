@@ -8,7 +8,7 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
 import cors from "cors";
 import express from "express";
-import helmet from "helmet";
+import helmetImport from "helmet";
 import jwt from "jsonwebtoken";
 import multer from "multer";
 import morgan from "morgan";
@@ -25,6 +25,11 @@ import {
 
 const app = express();
 app.set("trust proxy", true);
+
+type HelmetFactory = typeof import("helmet").default;
+const helmet =
+  ((helmetImport as unknown as { default?: HelmetFactory }).default ??
+    (helmetImport as unknown as HelmetFactory));
 
 const PORT = 4000;
 const DB_VERSION = 2;
