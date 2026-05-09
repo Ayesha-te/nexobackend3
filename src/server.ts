@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 // Load environment variables
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
@@ -59,13 +60,12 @@ const DEFAULT_DRAW_DAYS = 30;
 const DEFAULT_ANNOUNCEMENT_TITLE = "Join, Build Your Team & Start Earning";
 const DEFAULT_ANNOUNCEMENT_MESSAGE =
   "Choose from 500, 1500, 3000, 6000, or 10000 PKR plans, earn 30% / 15% / 5% referral income, unlock rewards up to 18000 PKR, and withdraw from 1500 PKR with 10% tax in 24-48 hours.";
-
-if (!MONGODB_URI) {
-  throw new Error("MONGODB_URI is required. Add it to backend/.env or your hosting environment.");
-}
+const IS_VERCEL = Boolean(process.env.VERCEL);
 
 // MongoDB setup - removed JSON database variables
-const UPLOADS_DIR = path.resolve(process.cwd(), "uploads");
+const UPLOADS_DIR = IS_VERCEL
+  ? path.join("/tmp", "nexo-uploads")
+  : path.resolve(process.cwd(), "uploads");
 const PAYMENT_PROOF_DIR = path.join(UPLOADS_DIR, "payment-proofs");
 
 // MongoDB setup
@@ -87,6 +87,7 @@ let collections: {
   rewardClaims: Collection;
   withdrawalRequests: Collection;
 };
+let mongoConnectPromise: Promise<void> | null = null;
 
 // Types
 type UserRole = "user" | "admin";
@@ -593,7 +594,7 @@ function getRequestAppBaseUrl(req: express.Request) {
 function getPublicFileUrl(req: express.Request | null, filePath: string | null) {
   if (!filePath) return null;
 
-  const relativePath = `/files/${path.basename(filePath)}`;
+  const relativePath = `/api/files/${path.basename(filePath)}`;
   if (!req) {
     return relativePath;
   }
@@ -1176,7 +1177,16 @@ function hasPaymentProof(proofNote?: string, file?: Express.Multer.File) {
 
 // MongoDB connection
 async function connectToMongoDB() {
-  try {
+  if (!MONGODB_URI) {
+    throw new Error("MONGODB_URI is required. Add it to backend/.env or your hosting environment.");
+  }
+
+  if (mongoConnectPromise) {
+    return mongoConnectPromise;
+  }
+
+  mongoConnectPromise = (async () => {
+    try {
     mongoClient = new MongoClient(MONGODB_URI);
     await mongoClient.connect();
     mongoDb = mongoClient.db();
@@ -1203,8 +1213,16 @@ async function connectToMongoDB() {
     await initializeDatabase();
   } catch (error) {
     console.error('Failed to connect to MongoDB Atlas:', error);
-    process.exit(1);
+    mongoConnectPromise = null;
+    throw error;
   }
+  })();
+
+  return mongoConnectPromise;
+}
+
+export async function ensureBackendReady() {
+  await connectToMongoDB();
 }
 
 async function initializeDatabase() {
@@ -1402,8 +1420,16 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.get("/files/:fileName", (req, res) => {
-  const safeFileName = path.basename(req.params.fileName);
+function sendPaymentProofFile(req: express.Request, res: express.Response) {
+  const rawFileName = Array.isArray(req.params.fileName)
+    ? req.params.fileName[0]
+    : req.params.fileName;
+
+  if (!rawFileName) {
+    return res.status(400).json({ message: "File name is required." });
+  }
+
+  const safeFileName = path.basename(rawFileName);
   const filePath = path.join(PAYMENT_PROOF_DIR, safeFileName);
 
   if (!existsSync(filePath)) {
@@ -1411,7 +1437,10 @@ app.get("/files/:fileName", (req, res) => {
   }
 
   return res.sendFile(filePath);
-});
+}
+
+app.get("/files/:fileName", sendPaymentProofFile);
+app.get("/api/files/:fileName", sendPaymentProofFile);
 
 app.post("/api/auth/register", async (req, res) => {
   const body = parseSchema(registerSchema, req.body, res);
@@ -2964,7 +2993,7 @@ app.get("/api/admin/audit-logs", authenticate, requireAdmin, async (_req, res) =
 });
 
 // Root route for API information
-app.get("/", (_req, res) => {
+function sendApiInfo(_req: express.Request, res: express.Response) {
   res.json({
     name: "Nexo Women Earning System API",
     version: "1.0.0",
@@ -3006,11 +3035,14 @@ app.get("/", (_req, res) => {
       },
     },
   });
-});
+}
+
+app.get("/", sendApiInfo);
+app.get("/api", sendApiInfo);
 
 // Start server
 async function startServer() {
-  await connectToMongoDB();
+  await ensureBackendReady();
   
   app.listen(PORT, () => {
     console.log(`🚀 Nexo Backend Server running on port ${PORT}`);
@@ -3018,4 +3050,20 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+function isExecutedDirectly() {
+  const entryFile = process.argv[1];
+  if (!entryFile) {
+    return false;
+  }
+
+  return import.meta.url === pathToFileURL(entryFile).href;
+}
+
+if (isExecutedDirectly()) {
+  startServer().catch((error) => {
+    console.error("Failed to start backend server:", error);
+    process.exitCode = 1;
+  });
+}
+
+export default app;
