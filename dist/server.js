@@ -9,39 +9,40 @@ import jwt from "jsonwebtoken";
 import multer from "multer";
 import morgan from "morgan";
 import { existsSync, mkdirSync, renameSync } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { MongoClient } from "mongodb";
 import { DEFAULT_INVESTMENT_PLANS, DEFAULT_REFERRAL_RULES, DEFAULT_REWARD_MILESTONES, DEFAULT_WITHDRAWAL_RULES, } from "./business-model.js";
 const app = express();
-const PORT = Number(process.env.PORT ?? 4000);
+app.set("trust proxy", true);
+const PORT = 4000;
 const DB_VERSION = 2;
-const JWT_SECRET = process.env.JWT_SECRET ?? "nexo-local-secret";
-const API_BASE_URL = process.env.API_BASE_URL ?? `http://localhost:${PORT}`;
-const APP_BASE_URL = process.env.APP_BASE_URL ?? process.env.FRONTEND_BASE_URL ?? "http://localhost:3000";
-// Remove hardcoded frontend/admin URLs to allow any host
-const DEFAULT_ADMIN_NAME = process.env.ADMIN_NAME ?? "Nexo Platform Admin";
-const DEFAULT_ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@nexo.com";
-const DEFAULT_ADMIN_PHONE = process.env.ADMIN_PHONE ?? "+92 300 0000000";
-const DEFAULT_SUPPORT_EMAIL = process.env.SUPPORT_EMAIL ?? "support@nexo.com";
-const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "admin123";
-const DEFAULT_PLATFORM_NAME = process.env.PLATFORM_NAME ?? "Nexo Women Earning System";
+const MONGODB_URI = process.env.MONGODB_URI?.trim();
+const JWT_SECRET = createHash("sha256")
+    .update(`${MONGODB_URI ?? "missing-mongodb-uri"}::nexo-women-jwt-secret`)
+    .digest("hex");
+const DEFAULT_ADMIN_NAME = "Nexo Platform Admin";
+const DEFAULT_ADMIN_EMAIL = "admin@nexo.com";
+const DEFAULT_ADMIN_PHONE = "+92 300 0000000";
+const DEFAULT_SUPPORT_EMAIL = "support@nexo.com";
+const DEFAULT_ADMIN_PASSWORD = "admin123";
+const DEFAULT_PLATFORM_NAME = "Nexo Women Earning System";
 const LEGACY_DEFAULT_ACCOUNT_NAME = "Default Account";
 const LEGACY_DEFAULT_ACCOUNT_NUMBER = "0000000000";
 const LEGACY_DEFAULT_BANK_NAME = "Default Bank";
 const LEGACY_DEFAULT_PAYMENT_INSTRUCTIONS = "Default payment instructions";
-const DEFAULT_ACCOUNT_NAME = process.env.ACCOUNT_NAME ?? "Sardar Laeiq Ahmed";
-const DEFAULT_ACCOUNT_NUMBER = process.env.ACCOUNT_NUMBER ?? "03448252109";
-const DEFAULT_BANK_NAME = process.env.BANK_NAME ?? "JazzCash";
-const DEFAULT_PAYMENT_INSTRUCTIONS = process.env.PAYMENT_INSTRUCTIONS ??
-    "Send payment to this JazzCash account and submit your transaction ID or proof screenshot for admin approval.";
-const DEFAULT_DRAW_ENTRY_FEE = Number(process.env.DRAW_ENTRY_FEE ?? 500);
-const DEFAULT_DRAW_TITLE = process.env.DRAW_TITLE ?? "Monthly Lucky Draw";
-const DEFAULT_DRAW_DAYS = Number(process.env.DRAW_DAYS ?? 30);
-const DEFAULT_ANNOUNCEMENT_TITLE = process.env.ANNOUNCEMENT_TITLE ?? "Join, Build Your Team & Start Earning";
-const DEFAULT_ANNOUNCEMENT_MESSAGE = process.env.ANNOUNCEMENT_MESSAGE ??
-    "Choose from 500, 1500, 3000, 6000, or 10000 PKR plans, earn 30% / 15% / 5% referral income, unlock rewards up to 18000 PKR, and withdraw from 1500 PKR with 10% tax in 24-48 hours.";
-const MONGODB_URI = process.env.MONGODB_URI;
+const DEFAULT_ACCOUNT_NAME = "Sardar Laeiq Ahmed";
+const DEFAULT_ACCOUNT_NUMBER = "03448252109";
+const DEFAULT_BANK_NAME = "JazzCash";
+const DEFAULT_PAYMENT_INSTRUCTIONS = "Send payment to this JazzCash account and submit your transaction ID or proof screenshot for admin approval.";
+const DEFAULT_DRAW_ENTRY_FEE = 500;
+const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
+const DEFAULT_DRAW_DAYS = 30;
+const DEFAULT_ANNOUNCEMENT_TITLE = "Join, Build Your Team & Start Earning";
+const DEFAULT_ANNOUNCEMENT_MESSAGE = "Choose from 500, 1500, 3000, 6000, or 10000 PKR plans, earn 30% / 15% / 5% referral income, unlock rewards up to 18000 PKR, and withdraw from 1500 PKR with 10% tax in 24-48 hours.";
+if (!MONGODB_URI) {
+    throw new Error("MONGODB_URI is required. Add it to backend/.env or your hosting environment.");
+}
 // MongoDB setup - removed JSON database variables
 const UPLOADS_DIR = path.resolve(process.cwd(), "uploads");
 const PAYMENT_PROOF_DIR = path.join(UPLOADS_DIR, "payment-proofs");
@@ -237,10 +238,51 @@ function normalizePlanBenefits(benefits, points) {
 function roundCurrency(amount) {
     return Math.round(amount * 100) / 100;
 }
-function getPublicFileUrl(filePath) {
+function getForwardedHeaderValue(value) {
+    if (Array.isArray(value)) {
+        return value[0]?.trim();
+    }
+    return value?.split(",")[0]?.trim();
+}
+function getRequestOrigin(req) {
+    const forwardedProto = getForwardedHeaderValue(req.headers["x-forwarded-proto"]);
+    const forwardedHost = getForwardedHeaderValue(req.headers["x-forwarded-host"]);
+    const host = forwardedHost || req.get("host") || `localhost:${PORT}`;
+    const protocol = forwardedProto || req.protocol || "http";
+    return `${protocol}://${host}`.replace(/\/+$/, "");
+}
+function getRequestAppBaseUrl(req) {
+    const originHeader = req.get("origin")?.trim();
+    if (originHeader) {
+        return originHeader.replace(/\/+$/, "");
+    }
+    const referer = req.get("referer")?.trim();
+    if (referer) {
+        try {
+            const parsedUrl = new URL(referer);
+            return `${parsedUrl.protocol}//${parsedUrl.host}`.replace(/\/+$/, "");
+        }
+        catch {
+            // Ignore malformed referer headers and fall back to the request origin.
+        }
+    }
+    return getRequestOrigin(req);
+}
+function getPublicFileUrl(req, filePath) {
     if (!filePath)
         return null;
-    return `${API_BASE_URL}/files/${path.basename(filePath)}`;
+    const relativePath = `/files/${path.basename(filePath)}`;
+    if (!req) {
+        return relativePath;
+    }
+    return `${getRequestOrigin(req)}${relativePath}`;
+}
+function getReferralLink(req, referralCode) {
+    const relativePath = `/r/${referralCode}`;
+    if (!req) {
+        return relativePath;
+    }
+    return `${getRequestAppBaseUrl(req)}${relativePath}`;
 }
 async function hashPassword(password) {
     // Using Node.js crypto for password hashing since Bun is not available
@@ -295,10 +337,10 @@ function buildStoredProofDetails(file) {
         proofMimeType: file.mimetype,
     };
 }
-function serializePaymentSubmission(payment) {
+function serializePaymentSubmission(payment, req = null) {
     return {
         ...payment,
-        proofFileUrl: getPublicFileUrl(payment.proofFilePath),
+        proofFileUrl: getPublicFileUrl(req, payment.proofFilePath),
     };
 }
 function createToken(user) {
@@ -451,7 +493,7 @@ async function getAvailableWalletBalance(userId) {
 async function getWalletTransactionsForUser(userId) {
     return (await collections.walletTransactions.find({ userId }).sort({ createdAt: -1 }).toArray());
 }
-async function serializeUser(user) {
+async function serializeUser(user, req = null) {
     const sponsor = user.referredByUserId ? await getUserById(user.referredByUserId) : null;
     return {
         id: user.id,
@@ -464,7 +506,7 @@ async function serializeUser(user) {
         sponsorName: sponsor?.name ?? null,
         sponsorReferralCode: sponsor?.referralCode ?? null,
         referralLinkEnabled: true,
-        referralLink: `${APP_BASE_URL}/r/${user.referralCode}`,
+        referralLink: getReferralLink(req, user.referralCode),
         accountType: user.accountType,
         walletBalance: await getWalletBalance(user.id),
         createdAt: user.createdAt,
@@ -877,11 +919,19 @@ async function syncBusinessModel() {
     });
 }
 // Routes
-app.get("/api/health", (_req, res) => {
+app.get("/api/health", (req, res) => {
     res.json({
         status: "ok",
-        apiBaseUrl: API_BASE_URL,
+        apiBaseUrl: `${getRequestOrigin(req)}/api`,
     });
+});
+app.get("/files/:fileName", (req, res) => {
+    const safeFileName = path.basename(req.params.fileName);
+    const filePath = path.join(PAYMENT_PROOF_DIR, safeFileName);
+    if (!existsSync(filePath)) {
+        return res.status(404).json({ message: "File not found." });
+    }
+    return res.sendFile(filePath);
 });
 app.post("/api/auth/register", async (req, res) => {
     const body = parseSchema(registerSchema, req.body, res);
@@ -921,7 +971,7 @@ app.post("/api/auth/register", async (req, res) => {
         await addNotification(referredByUserId, "commission", "New Referral", `${user.name} joined using your referral code. Commission starts when their investment is approved.`);
     }
     return res.status(201).json({
-        user: await serializeUser(user),
+        user: await serializeUser(user, req),
         token: createToken({ id: user.id, role: user.role, email: user.email }),
     });
 });
@@ -938,7 +988,7 @@ app.post("/api/auth/login", async (req, res) => {
     const refreshedUser = await getUserById(user.id);
     return res.json({
         token: createToken(user),
-        user: refreshedUser ? await serializeUser(refreshedUser) : await serializeUser(user),
+        user: refreshedUser ? await serializeUser(refreshedUser, req) : await serializeUser(user, req),
     });
 });
 app.get("/api/auth/me", authenticate, async (req, res) => {
@@ -946,7 +996,7 @@ app.get("/api/auth/me", authenticate, async (req, res) => {
     if (!user) {
         return res.status(404).json({ message: "User not found." });
     }
-    return res.json({ user: await serializeUser(user) });
+    return res.json({ user: await serializeUser(user, req) });
 });
 app.get("/api/user/dashboard", authenticate, async (req, res) => {
     const user = await getUserById(req.authUser.id);
@@ -985,7 +1035,7 @@ app.get("/api/user/dashboard", authenticate, async (req, res) => {
         .filter((transaction) => ["points_reward", "winner_reward"].includes(transaction.type))
         .reduce((sum, transaction) => sum + transaction.amount, 0));
     return res.json({
-        user: await serializeUser(user),
+        user: await serializeUser(user, req),
         stats: {
             totalInvestment,
             totalPoints: rewardProgress.totalPoints,
@@ -1014,7 +1064,7 @@ app.get("/api/user/join-options", authenticate, async (req, res) => {
         return res.status(404).json({ message: "User not found." });
     }
     return res.json({
-        user: await serializeUser(user),
+        user: await serializeUser(user, req),
         plans: await getActivePlans(),
         settings: await getPublicSettings(),
     });
@@ -1027,7 +1077,7 @@ app.get("/api/user/investments", authenticate, async (req, res) => {
         return {
             ...order,
             plan,
-            payment: payment ? serializePaymentSubmission(payment) : null,
+            payment: payment ? serializePaymentSubmission(payment, req) : null,
             metrics: plan ? calculateInvestmentMetrics(order, plan) : null,
         };
     }));
@@ -1098,7 +1148,7 @@ app.post("/api/user/investments", authenticate, async (req, res) => {
     await addAuditLog({ userId: user.id, email: user.email, role: user.role }, "INVESTMENT_SUBMITTED", "investment", order.id, { planId: plan.id, paymentId: payment.id });
     return res.status(201).json({
         order,
-        payment: serializePaymentSubmission(payment),
+        payment: serializePaymentSubmission(payment, req),
         plan,
     });
 });
@@ -1111,7 +1161,7 @@ app.get("/api/user/lucky-draw", authenticate, async (req, res) => {
         return {
             ...entry,
             draw,
-            payment: payment ? serializePaymentSubmission(payment) : null,
+            payment: payment ? serializePaymentSubmission(payment, req) : null,
         };
     }));
     const sortedItems = items.sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
@@ -1185,7 +1235,7 @@ app.post("/api/user/lucky-draw-entries", authenticate, async (req, res) => {
     await addAuditLog({ userId: user.id, email: user.email, role: user.role }, "LUCKY_DRAW_ENTRY_SUBMITTED", "lucky_draw_entry", entry.id, { drawId: draw.id, paymentId: payment.id, ticketId: entry.ticketId });
     return res.status(201).json({
         entry,
-        payment: serializePaymentSubmission(payment),
+        payment: serializePaymentSubmission(payment, req),
         draw,
     });
 });
@@ -1195,7 +1245,7 @@ app.get("/api/user/referrals", authenticate, async (req, res) => {
         return res.status(404).json({ message: "User not found." });
     }
     return res.json({
-        user: await serializeUser(user),
+        user: await serializeUser(user, req),
         settings: (await getPublicSettings()).referralRules,
         summary: await getReferralCounts(user.id),
     });
@@ -1570,10 +1620,10 @@ app.delete("/api/admin/plans/:id", authenticate, requireAdmin, async (req, res) 
     await addAuditLog({ userId: req.authUser.id, email: req.authUser.email, role: req.authUser.role }, "PLAN_DELETED", "plan", planId, {});
     return res.json({ deleted: true, archived: false });
 });
-app.get("/api/admin/users", authenticate, requireAdmin, async (_req, res) => {
+app.get("/api/admin/users", authenticate, requireAdmin, async (req, res) => {
     const users = (await collections.users.find({ role: "user" }).sort({ createdAt: -1 }).toArray());
     const items = await Promise.all(users.map(async (user) => {
-        const serializedUser = await serializeUser(user);
+        const serializedUser = await serializeUser(user, req);
         return {
             ...serializedUser,
             activeInvestmentValue: await getUserActiveInvestmentValue(user.id),
@@ -1595,7 +1645,7 @@ app.get("/api/admin/users/:id", authenticate, requireAdmin, async (req, res) => 
         return {
             ...order,
             plan,
-            payment: payment ? serializePaymentSubmission(payment) : null,
+            payment: payment ? serializePaymentSubmission(payment, req) : null,
             metrics: plan ? calculateInvestmentMetrics(order, plan) : null,
         };
     }));
@@ -1606,7 +1656,7 @@ app.get("/api/admin/users/:id", authenticate, requireAdmin, async (req, res) => 
     })));
     const winnerRecords = await collections.winnerRecords.find({ userId: user.id }).sort({ announcedAt: -1 }).toArray();
     return res.json({
-        user: await serializeUser(user),
+        user: await serializeUser(user, req),
         referrals: await getReferralCounts(user.id),
         investments: investmentsWithPlans,
         entries: entriesWithDetails,
@@ -1628,7 +1678,7 @@ app.get("/api/admin/payments", authenticate, requireAdmin, async (req, res) => {
             ? (await collections.luckyDrawEntries.findOne({ id: payment.referenceId }))?.ticketId ?? null
             : null;
         return {
-            ...serializePaymentSubmission(payment),
+            ...serializePaymentSubmission(payment, req),
             user: user ? { id: user.id, name: user.name, email: user.email } : null,
             plan: plan
                 ? {
@@ -1694,8 +1744,8 @@ app.put("/api/admin/payments/:id", authenticate, requireAdmin, async (req, res) 
         }
     }
     return res.json({
-        payment: serializePaymentSubmission(payment),
-        user: await serializeUser(user),
+        payment: serializePaymentSubmission(payment, req),
+        user: await serializeUser(user, req),
     });
 });
 app.get("/api/admin/draws", authenticate, requireAdmin, async (_req, res) => {
@@ -1929,7 +1979,7 @@ app.put("/api/admin/settings", authenticate, requireAdmin, async (req, res) => {
         latestAnnouncement,
     });
 });
-app.get("/api/admin/transactions", authenticate, requireAdmin, async (_req, res) => {
+app.get("/api/admin/transactions", authenticate, requireAdmin, async (req, res) => {
     const paymentSubmissions = await collections.paymentSubmissions.find({}).toArray();
     const walletTransactions = await collections.walletTransactions.find({}).toArray();
     const withdrawalRequests = await collections.withdrawalRequests.find({}).toArray();
@@ -1946,7 +1996,7 @@ app.get("/api/admin/transactions", authenticate, requireAdmin, async (_req, res)
             status: payment.status,
             createdAt: payment.createdAt,
             note: payment.proofNote,
-            proofFileUrl: payment.proofFilePath ? getPublicFileUrl(payment.proofFilePath) : null,
+            proofFileUrl: payment.proofFilePath ? getPublicFileUrl(req, payment.proofFilePath) : null,
             reviewNote: payment.reviewNote,
             referenceId: payment.referenceId,
             referenceType: payment.channel,
