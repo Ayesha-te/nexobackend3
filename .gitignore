@@ -1,0 +1,9 @@
+node_modules/
+dist/
+uploads/
+data/
+.env
+server.log
+server.err
+server-live.log
+server-live.err
