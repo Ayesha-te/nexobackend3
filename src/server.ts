@@ -34,6 +34,7 @@ const helmet =
 const PORT = 4000;
 const DB_VERSION = 2;
 const MONGODB_URI = process.env.MONGODB_URI?.trim();
+console.log("[startup] MONGODB_URI present:", Boolean(MONGODB_URI));
 const JWT_SECRET = createHash("sha256")
   .update(`${MONGODB_URI ?? "missing-mongodb-uri"}::nexo-women-jwt-secret`)
   .digest("hex");
