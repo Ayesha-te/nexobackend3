@@ -1,0 +1,138 @@
+{
+  "meta": {
+    "version": 2,
+    "seededAt": "2026-05-07T15:21:30.517Z"
+  },
+  "users": [
+    {
+      "id": "ADM-1001",
+      "role": "admin",
+      "name": "Nexo Platform Admin",
+      "email": "admin@nexo.com",
+      "phone": "+92 300 0000000",
+      "passwordHash": "$2b$10$7ZesL7E5vTt.B3FRqvdDS.b.EiTTAKgoDf8e6PX8CwsYNMjSe9iTm",
+      "referralCode": "ADMIN-NEXO",
+      "referredByUserId": null,
+      "referralLinkEnabled": false,
+      "accountType": "prospect",
+      "walletBalance": 0,
+      "createdAt": "2026-05-07T15:21:30.517Z",
+      "updatedAt": "2026-05-07T15:21:30.517Z",
+      "lastLoginAt": null
+    }
+  ],
+  "plans": [
+    {
+      "id": "plan-starter",
+      "name": "Starter Plan",
+      "price": 5000,
+      "roiPercent": 18,
+      "durationDays": 30,
+      "benefits": [
+        "Entry plan",
+        "Dashboard access",
+        "Daily ROI tracking"
+      ]
+    },
+    {
+      "id": "plan-silver",
+      "name": "Silver Plan",
+      "price": 15000,
+      "roiPercent": 24,
+      "durationDays": 35,
+      "benefits": [
+        "Higher ROI",
+        "Priority support",
+        "Full investor tools"
+      ]
+    },
+    {
+      "id": "plan-gold",
+      "name": "Gold Plan",
+      "price": 40000,
+      "roiPercent": 30,
+      "durationDays": 45,
+      "benefits": [
+        "Advanced earning access",
+        "Faster returns",
+        "Referral analytics"
+      ],
+      "featured": true
+    },
+    {
+      "id": "plan-premium",
+      "name": "Premium Plan",
+      "price": 100000,
+      "roiPercent": 42,
+      "durationDays": 60,
+      "benefits": [
+        "Top-tier ROI",
+        "Premium support",
+        "Highest growth visibility"
+      ]
+    }
+  ],
+  "luckyDraws": [
+    {
+      "id": "draw-001",
+      "title": "Monthly Lucky Draw",
+      "entryFee": 2500,
+      "drawDate": "2026-05-17T15:21:30.581Z",
+      "terms": [
+        "One approved payment activates exactly one ticket.",
+        "Each re-entry needs a new payment and generates a fresh ticket.",
+        "Only the first approved direct lucky draw entry pays 25% upline commission."
+      ],
+      "status": "open",
+      "createdAt": "2026-05-07T15:21:30.517Z",
+      "updatedAt": "2026-05-07T15:21:30.517Z"
+    }
+  ],
+  "paymentSubmissions": [],
+  "investmentOrders": [],
+  "luckyDrawEntries": [],
+  "winnerRecords": [],
+  "walletTransactions": [],
+  "notifications": [],
+  "announcements": [
+    {
+      "id": "ANN-5371FABE",
+      "title": "Platform Notice",
+      "message": "Welcome to Nexo. Investment activation, lucky draw entries, commissions, and rewards are now managed through the live backend.",
+      "active": true,
+      "createdAt": "2026-05-07T15:21:30.517Z"
+    }
+  ],
+  "auditLogs": [
+    {
+      "id": "AUD-8D34B7ED",
+      "actorUserId": "ADM-1001",
+      "actorEmail": "admin@nexo.com",
+      "actorRole": "admin",
+      "action": "SYSTEM_INITIALIZED",
+      "targetType": "system",
+      "targetId": "bootstrap",
+      "details": {
+        "plans": 4,
+        "drawId": "draw-001"
+      },
+      "createdAt": "2026-05-07T15:21:30.517Z"
+    }
+  ],
+  "settings": {
+    "platformName": "Nexo",
+    "supportEmail": "support@nexo.com",
+    "enableRegistrations": true,
+    "maintenanceMode": false,
+    "paymentDetails": {
+      "accountName": "Nexo Operations",
+      "accountNumber": "001234567890",
+      "bankName": "Meezan Bank",
+      "instructions": "Send payment manually to the account above, then submit your transaction ID and proof note in the app for verification."
+    },
+    "referralRules": {
+      "investmentDirectPercent": 10,
+      "luckyDrawFirstEntryPercent": 25
+    }
+  }
+}
