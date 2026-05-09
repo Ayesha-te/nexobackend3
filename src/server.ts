@@ -346,6 +346,14 @@ const ALLOWED_PROOF_MIME_TYPES = new Set([
   "image/gif",
   "application/pdf",
 ]);
+const OPEN_CORS_METHODS = ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"];
+const DEFAULT_ALLOWED_CORS_HEADERS = [
+  "Origin",
+  "X-Requested-With",
+  "Content-Type",
+  "Accept",
+  "Authorization",
+];
 
 app.use(
   helmet({
@@ -364,10 +372,33 @@ app.use(
     },
   }),
 );
-app.use(cors({
-  origin: true, // Allow any origin for development flexibility
-  credentials: true,
-}));
+app.use((req, res, next) => {
+  const requestedHeaders = req.header("Access-Control-Request-Headers");
+
+  // Keep CORS fully open so any frontend can call the backend.
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", OPEN_CORS_METHODS.join(","));
+  res.header(
+    "Access-Control-Allow-Headers",
+    requestedHeaders || DEFAULT_ALLOWED_CORS_HEADERS.join(","),
+  );
+
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+
+  next();
+});
+app.use(
+  cors({
+    origin: "*",
+    methods: OPEN_CORS_METHODS,
+    allowedHeaders: DEFAULT_ALLOWED_CORS_HEADERS,
+    credentials: false,
+    optionsSuccessStatus: 204,
+  }),
+);
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(morgan("combined"));
