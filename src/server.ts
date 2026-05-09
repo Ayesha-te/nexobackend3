@@ -1418,6 +1418,10 @@ async function syncBusinessModel() {
 }
 
 // Routes
+app.get("/", (req, res) => {
+  res.json({ message: "Backend is working" });
+});
+
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
