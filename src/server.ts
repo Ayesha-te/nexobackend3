@@ -472,6 +472,10 @@ const paymentDecisionSchema = z.object({
   reviewNote: z.string().trim().optional(),
 });
 
+const drawUpdateSchema = z.object({
+  drawDate: z.string().trim().min(1),
+});
+
 const winnerSelectionSchema = z.object({
   entryIds: z.array(z.string()),
   rewardAmount: z.number().positive(),
@@ -2673,6 +2677,43 @@ app.get("/api/admin/draws", authenticate, requireAdmin, async (_req, res) => {
   return res.json({
     draws: drawsWithStats,
     entries,
+  });
+});
+
+app.put("/api/admin/draws/:id", authenticate, requireAdmin, async (req, res) => {
+  const body = parseSchema(drawUpdateSchema, req.body, res);
+  if (!body) {
+    return;
+  }
+
+  const draw = await getDrawById(String(req.params.id));
+  if (!draw) {
+    return res.status(404).json({ message: "Lucky draw not found." });
+  }
+
+  const normalizedDrawDate = new Date(body.drawDate);
+  if (Number.isNaN(normalizedDrawDate.getTime())) {
+    return res.status(400).json({ message: "Invalid draw date." });
+  }
+
+  await collections.luckyDraws.updateOne(
+    { id: draw.id },
+    { $set: { drawDate: normalizedDrawDate.toISOString(), updatedAt: nowIso() } },
+  );
+
+  await addAuditLog(
+    { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
+    "DRAW_DATE_UPDATED",
+    "lucky_draw",
+    draw.id,
+    { drawDate: normalizedDrawDate.toISOString() },
+  );
+
+  return res.json({
+    draw: {
+      ...draw,
+      drawDate: normalizedDrawDate.toISOString(),
+    },
   });
 });
 
