@@ -59,7 +59,7 @@ const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
 const DEFAULT_DRAW_DAYS = 30;
 const DEFAULT_ANNOUNCEMENT_TITLE = "Join, Build Your Team & Start Earning";
 const DEFAULT_ANNOUNCEMENT_MESSAGE =
-  "Choose from 1000 to 10000 PKR plans, earn 48% / 18% / 10% referral income, unlock rewards up to 35,000 PKR, and withdraw from 1000 PKR with 10% tax in 24-48 hours.";
+  "Choose from 1000 to 15000 PKR plans, earn 48% / 18% / 10% referral income, unlock rewards up to 35,000 PKR, and withdraw from 1000 PKR with 10% tax in 24-48 hours.";
 const IS_VERCEL = Boolean(process.env.VERCEL);
 
 // MongoDB setup - removed JSON database variables
@@ -588,15 +588,57 @@ function generateTicketId() {
   return result;
 }
 
-function getDefaultPlanBenefits(points: number) {
-  return [
+function getDefaultPlanBenefits(price: number, points: number) {
+  const planBenefitsByPrice: Record<number, string[]> = {
+    1000: [
+      `${points} reward points on approval`,
+      "No Courses",
+      "Eligible for 3-level referral income",
+    ],
+    2000: [
+      `${points} reward points on approval`,
+      "No Courses",
+      "Eligible for 3-level referral income",
+    ],
+    4000: [
+      `${points} reward points on approval`,
+      "5 Courses (2 Mandatory + 3 Choice)",
+      "Eligible for 3-level referral income",
+    ],
+    6500: [
+      `${points} reward points on approval`,
+      "10 Courses (2 Mandatory + 8 Choice)",
+      "Eligible for 3-level referral income",
+    ],
+    9500: [
+      `${points} reward points on approval`,
+      "15 Courses (3 Mandatory + 12 Choice)",
+      "Eligible for 3-level referral income",
+    ],
+    12000: [
+      `${points} reward points on approval`,
+      "25 Courses (3 Mandatory + 22 Choice)",
+      "Eligible for 3-level referral income",
+    ],
+    15000: [
+      `${points} reward points on approval`,
+      "35+ Courses (All Access)",
+      "Eligible for 3-level referral income",
+    ],
+  };
+
+  return planBenefitsByPrice[price] ?? [
     `${points} reward points on approval`,
     "Eligible for 3-level referral income",
     "Counts toward rank rewards",
   ];
 }
 
-function normalizePlanBenefits(benefits: string[] | undefined, points: number) {
+function normalizePlanBenefits(benefits: string[] | undefined, points: number, price = 0) {
+  if ([1000, 2000, 4000, 6500, 9500, 12000, 15000].includes(price)) {
+    return getDefaultPlanBenefits(price, points);
+  }
+
   const uniqueBenefits = Array.from(
     new Set(
       (benefits ?? [])
@@ -605,7 +647,7 @@ function normalizePlanBenefits(benefits: string[] | undefined, points: number) {
     ),
   );
 
-  return uniqueBenefits.length > 0 ? uniqueBenefits : getDefaultPlanBenefits(points);
+  return uniqueBenefits.length > 0 ? uniqueBenefits : getDefaultPlanBenefits(price, points);
 }
 
 function roundCurrency(amount: number) {
@@ -858,7 +900,7 @@ async function serializeAdminPlan(planInput: any) {
 
   return {
     ...plan,
-    benefits: normalizePlanBenefits(plan.benefits, plan.points),
+    benefits: normalizePlanBenefits(plan.benefits, plan.points, plan.price),
     linkedInvestments,
     linkedPayments,
   };
@@ -1380,49 +1422,67 @@ async function initializeDatabase() {
 }
 
 async function syncBusinessModel() {
-  const plans = await collections.plans.find({}).toArray();
+  const seededPlans: Plan[] = DEFAULT_INVESTMENT_PLANS.map((plan) => ({
+    ...plan,
+    benefits: [...plan.benefits],
+    roiPercent: 0,
+    durationDays: 0,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    deletedAt: null,
+  }));
 
-  if (plans.length === 0) {
-    const seededPlans: Plan[] = DEFAULT_INVESTMENT_PLANS.map((plan) => ({
-      ...plan,
-      benefits: [...plan.benefits],
-      roiPercent: 0,
-      durationDays: 0,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-      deletedAt: null,
-    }));
+  const seededPlanIds = seededPlans.map((plan) => plan.id);
+  const existingPlans = await collections.plans.find({}).toArray();
+  const existingById = new Map<string, any>();
 
-    await collections.plans.insertMany(seededPlans);
-  } else {
-    for (const rawPlan of plans) {
-      const normalizedPlan = normalizePlan(rawPlan);
-
-      await collections.plans.updateOne(
-        { id: normalizedPlan.id },
-        {
-          $set: {
-            name: normalizedPlan.name,
-            price: normalizedPlan.price,
-            points: normalizedPlan.points,
-            benefits: normalizePlanBenefits(normalizedPlan.benefits, normalizedPlan.points),
-            featured: normalizedPlan.featured,
-            active: normalizedPlan.active,
-            roiPercent: 0,
-            durationDays: 0,
-            createdAt:
-              typeof rawPlan.createdAt === "string" ? rawPlan.createdAt : nowIso(),
-            updatedAt:
-              typeof rawPlan.updatedAt === "string" ? rawPlan.updatedAt : nowIso(),
-            deletedAt:
-              typeof rawPlan.deletedAt === "string" || rawPlan.deletedAt === null
-                ? rawPlan.deletedAt
-                : null,
-          },
-        },
-      );
+  for (const rawPlan of existingPlans) {
+    const id = typeof rawPlan?.id === "string" ? rawPlan.id : "";
+    if (id && !existingById.has(id)) {
+      existingById.set(id, rawPlan);
     }
   }
+
+  // Enforce the exact 7 poster plans as active plans (upsert by id).
+  for (const plan of seededPlans) {
+    const existingPlan = existingById.get(plan.id);
+
+    await collections.plans.updateOne(
+      { id: plan.id },
+      {
+        $set: {
+          name: plan.name,
+          price: plan.price,
+          points: plan.points,
+          benefits: normalizePlanBenefits(plan.benefits, plan.points, plan.price),
+          featured: plan.featured,
+          active: true,
+          roiPercent: 0,
+          durationDays: 0,
+          createdAt:
+            typeof existingPlan?.createdAt === "string" ? existingPlan.createdAt : nowIso(),
+          updatedAt: nowIso(),
+          deletedAt: null,
+        },
+      },
+      { upsert: true },
+    );
+  }
+
+  // Keep legacy plans for historical records but hide them from active plan listings.
+  await collections.plans.updateMany(
+    {
+      id: { $nin: seededPlanIds },
+      active: { $ne: false },
+      $or: [{ deletedAt: { $exists: false } }, { deletedAt: null }],
+    },
+    {
+      $set: {
+        active: false,
+        updatedAt: nowIso(),
+      },
+    },
+  );
 
   const currentSettings = (await collections.settings.findOne({})) as Partial<Settings> | null;
   const shouldApplyDefaultPlatformName =
@@ -2357,7 +2417,7 @@ app.post("/api/admin/plans", authenticate, requireAdmin, async (req: Authenticat
     name: body.name.trim(),
     price: roundCurrency(body.price),
     points: Math.round(body.points),
-    benefits: normalizePlanBenefits(body.benefits, Math.round(body.points)),
+    benefits: normalizePlanBenefits(body.benefits, Math.round(body.points), Math.round(body.price)),
     featured: body.featured ?? false,
     active: body.active ?? true,
     roiPercent: 0,
@@ -2398,7 +2458,7 @@ app.put("/api/admin/plans/:id", authenticate, requireAdmin, async (req: Authenti
     name: body.name.trim(),
     price: roundCurrency(body.price),
     points: Math.round(body.points),
-    benefits: normalizePlanBenefits(body.benefits, Math.round(body.points)),
+    benefits: normalizePlanBenefits(body.benefits, Math.round(body.points), Math.round(body.price)),
     featured: body.featured ?? false,
     active: body.active ?? true,
     roiPercent: 0,
