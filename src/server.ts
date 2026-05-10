@@ -59,7 +59,7 @@ const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
 const DEFAULT_DRAW_DAYS = 30;
 const DEFAULT_ANNOUNCEMENT_TITLE = "Join, Build Your Team & Start Earning";
 const DEFAULT_ANNOUNCEMENT_MESSAGE =
-  "Choose from 500, 1500, 3000, 6000, or 10000 PKR plans, earn 30% / 15% / 5% referral income, unlock rewards up to 18000 PKR, and withdraw from 1500 PKR with 10% tax in 24-48 hours.";
+  "Choose from 1000 to 10000 PKR plans, earn 48% / 18% / 10% referral income, unlock rewards up to 35,000 PKR, and withdraw from 1000 PKR with 10% tax in 24-48 hours.";
 const IS_VERCEL = Boolean(process.env.VERCEL);
 
 // MongoDB setup - removed JSON database variables
@@ -86,6 +86,7 @@ let collections: {
   settings: Collection;
   rewardClaims: Collection;
   withdrawalRequests: Collection;
+  feedbacks: Collection;
 };
 let mongoConnectPromise: Promise<void> | null = null;
 let backendDatabaseReady = false;
@@ -273,6 +274,16 @@ type Notification = {
   title: string;
   message: string;
   read: boolean;
+  createdAt: string;
+};
+
+type Feedback = {
+  id: string;
+  userId: string;
+  name: string;
+  email: string;
+  message: string;
+  status: "pending" | "read";
   createdAt: string;
 };
 
@@ -543,6 +554,11 @@ const adminPlanSchema = z.object({
 const profileSchema = z.object({
   name: z.string().trim().min(3),
   phone: z.string().trim().min(10),
+});
+
+const feedbackSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  message: z.string().trim().min(5).max(5000),
 });
 
 // Helper functions
@@ -1260,6 +1276,7 @@ async function connectToMongoDB() {
         settings: mongoDb.collection('settings'),
         rewardClaims: mongoDb.collection('rewardClaims'),
         withdrawalRequests: mongoDb.collection('withdrawalRequests'),
+        feedbacks: mongoDb.collection('feedbacks'),
       };
 
       console.log('Connected to MongoDB Atlas successfully 🚀');
@@ -2055,6 +2072,35 @@ app.put("/api/user/profile", authenticate, async (req: AuthenticatedRequest, res
   return res.json({ message: "Profile updated successfully" });
 });
 
+app.post("/api/user/feedback", authenticate, async (req: AuthenticatedRequest, res) => {
+  const body = parseSchema(feedbackSchema, req.body, res);
+  if (!body) {
+    return;
+  }
+
+  const user = await getUserById(req.authUser!.id);
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  const feedback: Feedback = {
+    id: generateId("FB"),
+    userId: user.id,
+    name: body.name,
+    email: user.email,
+    message: body.message,
+    status: "pending",
+    createdAt: nowIso(),
+  };
+
+  await collections.feedbacks.insertOne(feedback);
+
+  return res.json({ 
+    message: "Feedback submitted successfully. Thank you for your feedback!",
+    feedback 
+  });
+});
+
 app.get("/api/user/notifications", authenticate, async (req: AuthenticatedRequest, res) => {
   const notifications = await collections.notifications
     .find({ userId: req.authUser!.id })
@@ -2433,6 +2479,54 @@ app.delete("/api/admin/plans/:id", authenticate, requireAdmin, async (req: Authe
   );
 
   return res.json({ deleted: true, archived: false });
+});
+
+app.get("/api/admin/feedbacks", authenticate, requireAdmin, async (_req, res) => {
+  const feedbacks = (await collections.feedbacks
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray()) as unknown as Feedback[];
+
+  const items = await Promise.all(
+    feedbacks.map(async (feedback) => {
+      const user = await getUserById(feedback.userId);
+      return {
+        id: feedback.id,
+        name: feedback.name,
+        email: feedback.email,
+        message: feedback.message,
+        status: feedback.status,
+        createdAt: feedback.createdAt,
+        user: user ? { name: user.name, email: user.email } : null,
+      };
+    }),
+  );
+
+  return res.json({ items });
+});
+
+app.put("/api/admin/feedbacks/:id/read", authenticate, requireAdmin, async (req: AuthenticatedRequest, res) => {
+  const feedbackId = String(req.params.id);
+  const feedback = await collections.feedbacks.findOne({ id: feedbackId });
+  
+  if (!feedback) {
+    return res.status(404).json({ message: "Feedback not found." });
+  }
+
+  await collections.feedbacks.updateOne(
+    { id: feedbackId },
+    { $set: { status: "read" } }
+  );
+
+  await addAuditLog(
+    { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
+    "FEEDBACK_READ",
+    "feedback",
+    feedbackId,
+    { feedbackName: feedback.name },
+  );
+
+  return res.json({ message: "Feedback marked as read." });
 });
 
 app.get("/api/admin/users", authenticate, requireAdmin, async (req, res) => {
@@ -3109,6 +3203,7 @@ function sendApiInfo(_req: express.Request, res: express.Response) {
         luckyDrawEntries: "POST /api/user/lucky-draw-entries",
         referrals: "GET /api/user/referrals",
         profile: "PUT /api/user/profile",
+        feedback: "POST /api/user/feedback",
         notifications: "GET /api/user/notifications",
         markNotificationRead: "PUT /api/user/notifications/:id/read",
         transactions: "GET /api/user/transactions",
@@ -3122,6 +3217,8 @@ function sendApiInfo(_req: express.Request, res: express.Response) {
         deletePlan: "DELETE /api/admin/plans/:id",
         payments: "GET /api/admin/payments",
         updatePayment: "PUT /api/admin/payments/:id",
+        feedbacks: "GET /api/admin/feedbacks",
+        markFeedbackRead: "PUT /api/admin/feedbacks/:id/read",
         draws: "GET /api/admin/draws",
         selectWinners: "POST /api/admin/draws/:id/winners",
         winners: "GET /api/admin/winners",
