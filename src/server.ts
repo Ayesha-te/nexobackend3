@@ -34,7 +34,7 @@ const helmet =
 
 const PORT = 4000;
 const DB_VERSION = 2;
-const MONGODB_URI = process.env.MONGODB_URI?.trim();
+const MONGODB_URI = process.env.MONGODB_URI?.trim().replace(/^['"]|['"]$/g, "");
 console.log("[startup] MONGODB_URI present:", Boolean(MONGODB_URI));
 const JWT_SECRET = createHash("sha256")
   .update(`${MONGODB_URI ?? "missing-mongodb-uri"}::nexo-women-jwt-secret`)
@@ -88,6 +88,18 @@ let collections: {
   withdrawalRequests: Collection;
 };
 let mongoConnectPromise: Promise<void> | null = null;
+let backendDatabaseReady = false;
+let backendDatabaseError: string | null = null;
+
+function setDatabaseUnavailable(message: string) {
+  backendDatabaseReady = false;
+  backendDatabaseError = message;
+  console.warn(`[startup] ${message}`);
+}
+
+function isValidMongoUri(uri: string) {
+  return uri.startsWith("mongodb://") || uri.startsWith("mongodb+srv://");
+}
 
 // Types
 type UserRole = "user" | "admin";
@@ -373,6 +385,26 @@ app.use(
     optionsSuccessStatus: 204,
   }),
 );
+
+app.use((req, res, next) => {
+  if (backendDatabaseReady || req.method === "OPTIONS") {
+    next();
+    return;
+  }
+
+  const publicPaths = new Set(["/", "/api", "/api/health"]);
+  if (publicPaths.has(req.path)) {
+    next();
+    return;
+  }
+
+  res.status(503).json({
+    message:
+      backendDatabaseError ??
+      "Backend is running, but MongoDB is not configured or is unavailable.",
+  });
+});
+
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(morgan("combined"));
@@ -1182,45 +1214,58 @@ function hasPaymentProof(proofNote?: string, file?: Express.Multer.File) {
 
 // MongoDB connection
 async function connectToMongoDB() {
-  if (!MONGODB_URI) {
-    throw new Error("MONGODB_URI is required. Add it to backend/.env or your hosting environment.");
-  }
-
   if (mongoConnectPromise) {
     return mongoConnectPromise;
   }
 
+  if (!MONGODB_URI) {
+    setDatabaseUnavailable("MONGODB_URI is missing in the hosting environment.");
+    mongoConnectPromise = Promise.resolve();
+    return;
+  }
+
+  if (!isValidMongoUri(MONGODB_URI)) {
+    setDatabaseUnavailable(
+      'MONGODB_URI must start with "mongodb://" or "mongodb+srv://".',
+    );
+    mongoConnectPromise = Promise.resolve();
+    return;
+  }
+
   mongoConnectPromise = (async () => {
     try {
-    mongoClient = new MongoClient(MONGODB_URI);
-    await mongoClient.connect();
-    mongoDb = mongoClient.db();
+      mongoClient = new MongoClient(MONGODB_URI);
+      await mongoClient.connect();
+      mongoDb = mongoClient.db();
+      backendDatabaseReady = true;
+      backendDatabaseError = null;
     
-    // Initialize collections
-    collections = {
-      users: mongoDb.collection('users'),
-      plans: mongoDb.collection('plans'),
-      luckyDraws: mongoDb.collection('luckyDraws'),
-      paymentSubmissions: mongoDb.collection('paymentSubmissions'),
-      investmentOrders: mongoDb.collection('investmentOrders'),
-      luckyDrawEntries: mongoDb.collection('luckyDrawEntries'),
-      winnerRecords: mongoDb.collection('winnerRecords'),
-      walletTransactions: mongoDb.collection('walletTransactions'),
-      notifications: mongoDb.collection('notifications'),
-      announcements: mongoDb.collection('announcements'),
-      auditLogs: mongoDb.collection('auditLogs'),
-      settings: mongoDb.collection('settings'),
-      rewardClaims: mongoDb.collection('rewardClaims'),
-      withdrawalRequests: mongoDb.collection('withdrawalRequests'),
-    };
-    
-    console.log('Connected to MongoDB Atlas successfully 🚀');
-    await initializeDatabase();
-  } catch (error) {
-    console.error('Failed to connect to MongoDB Atlas:', error);
-    mongoConnectPromise = null;
-    throw error;
-  }
+      // Initialize collections
+      collections = {
+        users: mongoDb.collection('users'),
+        plans: mongoDb.collection('plans'),
+        luckyDraws: mongoDb.collection('luckyDraws'),
+        paymentSubmissions: mongoDb.collection('paymentSubmissions'),
+        investmentOrders: mongoDb.collection('investmentOrders'),
+        luckyDrawEntries: mongoDb.collection('luckyDrawEntries'),
+        winnerRecords: mongoDb.collection('winnerRecords'),
+        walletTransactions: mongoDb.collection('walletTransactions'),
+        notifications: mongoDb.collection('notifications'),
+        announcements: mongoDb.collection('announcements'),
+        auditLogs: mongoDb.collection('auditLogs'),
+        settings: mongoDb.collection('settings'),
+        rewardClaims: mongoDb.collection('rewardClaims'),
+        withdrawalRequests: mongoDb.collection('withdrawalRequests'),
+      };
+
+      console.log('Connected to MongoDB Atlas successfully 🚀');
+      await initializeDatabase();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to connect to MongoDB Atlas.';
+      console.error('Failed to connect to MongoDB Atlas:', error);
+      mongoConnectPromise = null;
+      setDatabaseUnavailable(message);
+    }
   })();
 
   return mongoConnectPromise;
@@ -1425,6 +1470,8 @@ app.get("/", (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
+    database: backendDatabaseReady ? "connected" : "degraded",
+    databaseError: backendDatabaseError,
     apiBaseUrl: `${getRequestOrigin(req)}/api`,
   });
 });
