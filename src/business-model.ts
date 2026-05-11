@@ -1,7 +1,7 @@
 export const DEFAULT_INVESTMENT_PLANS = [
   {
     id: "PLAN-1000",
-    name: "Starter Queen",
+    name: "Plan 1",
     price: 1000,
     points: 6,
     benefits: [
@@ -15,7 +15,7 @@ export const DEFAULT_INVESTMENT_PLANS = [
   },
   {
     id: "PLAN-2000",
-    name: "Vision Queen",
+    name: "Plan 2",
     price: 2000,
     points: 12,
     benefits: [
@@ -29,7 +29,7 @@ export const DEFAULT_INVESTMENT_PLANS = [
   },
   {
     id: "PLAN-4000",
-    name: "Elevate Queen",
+    name: "Plan 3",
     price: 4000,
     points: 30,
     benefits: [
@@ -42,7 +42,7 @@ export const DEFAULT_INVESTMENT_PLANS = [
   },
   {
     id: "PLAN-6500",
-    name: "Sapphire Queen",
+    name: "Plan 4",
     price: 6500,
     points: 44,
     benefits: [
@@ -55,7 +55,7 @@ export const DEFAULT_INVESTMENT_PLANS = [
   },
   {
     id: "PLAN-9500",
-    name: "Ruby Queen",
+    name: "Plan 5",
     price: 9500,
     points: 63,
     benefits: [
@@ -68,7 +68,7 @@ export const DEFAULT_INVESTMENT_PLANS = [
   },
   {
     id: "PLAN-12000",
-    name: "Diamond Queen",
+    name: "Plan 6",
     price: 12000,
     points: 80,
     benefits: [
@@ -81,7 +81,7 @@ export const DEFAULT_INVESTMENT_PLANS = [
   },
   {
     id: "PLAN-15000",
-    name: "Platinum Queen",
+    name: "Plan 7",
     price: 15000,
     points: 100,
     benefits: [
@@ -99,17 +99,25 @@ export const DEFAULT_REFERRAL_RULES = {
   level2Percent: 18,
   level3Percent: 10,
 } as const;
-
+// Referral tiers are exposed to the frontend so it can explain the active rank ladder.
+export const DEFAULT_REFERRAL_TIERS = [
+  { title: "Starter", pointsRequired: 30, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Vision", pointsRequired: 1000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Elevate", pointsRequired: 4000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Sapphire", pointsRequired: 8000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Ruby", pointsRequired: 20000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Diamond", pointsRequired: 50000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Platinum", pointsRequired: 120000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Elite", pointsRequired: 250000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Royal", pointsRequired: 400000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Imperial", pointsRequired: 500000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+] as const;
 export const DEFAULT_REWARD_MILESTONES = [
-  { pointsRequired: 1000, rewardAmount: 1500, title: "Starter Rank" },
-  { pointsRequired: 2000, rewardAmount: 2500, title: "Bronze Rank" },
-  { pointsRequired: 4000, rewardAmount: 4000, title: "Silver Rank" },
-  { pointsRequired: 8000, rewardAmount: 6000, title: "Gold Rank" },
-  { pointsRequired: 15000, rewardAmount: 8000, title: "Ruby Rank" },
-  { pointsRequired: 25000, rewardAmount: 10000, title: "Diamond Rank" },
-  { pointsRequired: 40000, rewardAmount: 12000, title: "Platinum Rank" },
-  { pointsRequired: 70000, rewardAmount: 15000, title: "Crown Rank" },
-  { pointsRequired: 100000, rewardAmount: 18000, title: "Royal Rank" },
+  { pointsRequired: 30, rewardAmount: 0, title: "Level 1" },
+  { pointsRequired: 1000, rewardAmount: 5000, title: "Level 2" },
+  { pointsRequired: 4000, rewardAmount: 12000, title: "Level 3" },
+  { pointsRequired: 8000, rewardAmount: 20000, title: "Level 4" },
+  { pointsRequired: 20000, rewardAmount: 35000, title: "Level 5" },
 ] as const;
 
 export const DEFAULT_WITHDRAWAL_RULES = {

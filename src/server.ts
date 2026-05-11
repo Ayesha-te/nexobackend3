@@ -20,6 +20,7 @@ import { MongoClient, Db, Collection } from "mongodb";
 import {
   DEFAULT_INVESTMENT_PLANS,
   DEFAULT_REFERRAL_RULES,
+  DEFAULT_REFERRAL_TIERS,
   DEFAULT_REWARD_MILESTONES,
   DEFAULT_WITHDRAWAL_RULES,
 } from "./business-model.js";
@@ -43,6 +44,9 @@ const DEFAULT_ADMIN_NAME = "Nexo Platform Admin";
 const DEFAULT_ADMIN_EMAIL = "admin@nexo.com";
 const DEFAULT_ADMIN_PHONE = "+92 300 0000000";
 const DEFAULT_SUPPORT_EMAIL = "support@nexo.com";
+const DEFAULT_SUPPORT_PHONE_1 = "03448252109";
+const DEFAULT_SUPPORT_PHONE_2 = "03057410110";
+const DEFAULT_SUPPORT_LOCATION = "Sargodha";
 const DEFAULT_ADMIN_PASSWORD = "admin123";
 const DEFAULT_PLATFORM_NAME = "Nexo Women Earning System";
 const LEGACY_DEFAULT_ACCOUNT_NAME = "Default Account";
@@ -51,9 +55,9 @@ const LEGACY_DEFAULT_BANK_NAME = "Default Bank";
 const LEGACY_DEFAULT_PAYMENT_INSTRUCTIONS = "Default payment instructions";
 const DEFAULT_ACCOUNT_NAME = "Sardar Laeiq Ahmed";
 const DEFAULT_ACCOUNT_NUMBER = "03448252109";
-const DEFAULT_BANK_NAME = "JazzCash";
+const DEFAULT_BANK_NAME = "EasyPaisa";
 const DEFAULT_PAYMENT_INSTRUCTIONS =
-  "Send payment to this JazzCash account and submit your transaction ID or proof screenshot for admin approval.";
+  "Send payment to this EasyPaisa account and submit your transaction ID or proof screenshot for admin approval.";
 const DEFAULT_DRAW_ENTRY_FEE = 500;
 const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
 const DEFAULT_DRAW_DAYS = 30;
@@ -310,6 +314,12 @@ type AuditLog = {
 type Settings = {
   platformName: string;
   supportEmail: string;
+  contactDetails: {
+    phone1: string;
+    phone2: string;
+    email: string;
+    location: string;
+  };
   enableRegistrations: boolean;
   maintenanceMode: boolean;
   paymentDetails: {
@@ -510,6 +520,12 @@ const withdrawalDecisionSchema = z.object({
 const settingsSchema = z.object({
   platformName: z.string().trim().min(1),
   supportEmail: z.string().trim().email(),
+  contactDetails: z.object({
+    phone1: z.string().trim().min(3),
+    phone2: z.string().trim().min(3),
+    email: z.string().trim().email(),
+    location: z.string().trim().min(1),
+  }),
   enableRegistrations: z.boolean(),
   maintenanceMode: z.boolean(),
   paymentDetails: z.object({
@@ -525,9 +541,9 @@ const settingsSchema = z.object({
   }),
   rewardMilestones: z.array(z.object({
     pointsRequired: z.number().positive(),
-    rewardAmount: z.number().positive(),
+    rewardAmount: z.number().min(0),
     title: z.string().trim().min(1),
-  })),
+  })).length(DEFAULT_REWARD_MILESTONES.length),
   withdrawalRules: z.object({
     minimumAmount: z.number().positive(),
     taxPercent: z.number().min(0).max(100),
@@ -813,6 +829,12 @@ function normalizeSettings(settings?: Partial<Settings> | null): Settings {
   return {
     platformName: settings?.platformName ?? DEFAULT_PLATFORM_NAME,
     supportEmail: settings?.supportEmail ?? DEFAULT_SUPPORT_EMAIL,
+    contactDetails: {
+      phone1: settings?.contactDetails?.phone1 ?? DEFAULT_SUPPORT_PHONE_1,
+      phone2: settings?.contactDetails?.phone2 ?? DEFAULT_SUPPORT_PHONE_2,
+      email: settings?.contactDetails?.email ?? DEFAULT_SUPPORT_EMAIL,
+      location: settings?.contactDetails?.location ?? DEFAULT_SUPPORT_LOCATION,
+    },
     enableRegistrations: settings?.enableRegistrations ?? true,
     maintenanceMode: settings?.maintenanceMode ?? false,
     paymentDetails: {
@@ -830,7 +852,7 @@ function normalizeSettings(settings?: Partial<Settings> | null): Settings {
         settings?.referralRules?.level3Percent ?? DEFAULT_REFERRAL_RULES.level3Percent,
     },
     rewardMilestones:
-      settings?.rewardMilestones?.length
+      settings?.rewardMilestones?.length === DEFAULT_REWARD_MILESTONES.length
         ? settings.rewardMilestones
             .map((milestone) => ({
               pointsRequired: Number(milestone.pointsRequired),
@@ -1129,10 +1151,14 @@ async function getRewardMilestoneSummary(userId: string) {
   const milestones = settings.rewardMilestones.map((milestone) => ({
     ...milestone,
     claimed: claimedPoints.has(milestone.pointsRequired),
-    claimable: totalPoints >= milestone.pointsRequired && !claimedPoints.has(milestone.pointsRequired),
+    claimable:
+      milestone.rewardAmount > 0 &&
+      totalPoints >= milestone.pointsRequired &&
+      !claimedPoints.has(milestone.pointsRequired),
     remainingPoints: Math.max(milestone.pointsRequired - totalPoints, 0),
   }));
-  const nextMilestone = milestones.find((milestone) => !milestone.claimed) ?? null;
+  const nextMilestone =
+    milestones.find((milestone) => milestone.rewardAmount > 0 && !milestone.claimed) ?? null;
 
   return {
     totalPoints,
@@ -1165,19 +1191,38 @@ async function getReferralUplines(user: User, maxLevels = 3) {
 }
 
 async function distributeInvestmentCommissions(user: User, plan: Plan, paymentId: string) {
+  // Use sponsor-specific percentages based on their rank (total points).
   const settings = await getPublicSettings();
   const uplines = await getReferralUplines(user, 3);
-  const percentages = [
-    settings.referralRules.level1Percent,
-    settings.referralRules.level2Percent,
-    settings.referralRules.level3Percent,
-  ];
+
+  // Helper: get best matching referral tier for a given points total
+  function findTierForPoints(points: number) {
+    // DEFAULT_REFERRAL_TIERS is ordered from lowest to highest threshold; find the
+    // highest tier the points meet.
+    let best = null as null | (typeof DEFAULT_REFERRAL_TIERS)[number];
+    for (const tier of DEFAULT_REFERRAL_TIERS) {
+      if (points >= tier.pointsRequired) {
+        best = tier;
+      }
+    }
+    return best;
+  }
 
   for (const { level, user: sponsor } of uplines) {
-    const percentage = percentages[level - 1] ?? 0;
-    if (percentage <= 0) {
-      continue;
+    // Determine sponsor rank by their total points
+    const sponsorPoints = await getUserPoints(sponsor.id);
+    const tier = findTierForPoints(sponsorPoints);
+
+    let percentage = 0;
+    if (level === 1) {
+      percentage = tier ? tier.directPercent : settings.referralRules.level1Percent;
+    } else if (level === 2) {
+      percentage = tier ? tier.indirectPercent : settings.referralRules.level2Percent;
+    } else if (level === 3) {
+      percentage = tier ? tier.teamPercent : settings.referralRules.level3Percent;
     }
+
+    if (!percentage || percentage <= 0) continue;
 
     const amount = roundCurrency((plan.price * percentage) / 100);
     await addWalletCredit(
@@ -1376,6 +1421,12 @@ async function initializeDatabase() {
   const defaultSettings: Settings = normalizeSettings({
     platformName: DEFAULT_PLATFORM_NAME,
     supportEmail: DEFAULT_SUPPORT_EMAIL,
+    contactDetails: {
+      phone1: DEFAULT_SUPPORT_PHONE_1,
+      phone2: DEFAULT_SUPPORT_PHONE_2,
+      email: DEFAULT_SUPPORT_EMAIL,
+      location: DEFAULT_SUPPORT_LOCATION,
+    },
     enableRegistrations: true,
     maintenanceMode: false,
     paymentDetails: {
@@ -1504,6 +1555,12 @@ async function syncBusinessModel() {
     platformName: shouldApplyDefaultPlatformName
       ? DEFAULT_PLATFORM_NAME
       : currentSettings?.platformName,
+    contactDetails: {
+      phone1: currentSettings?.contactDetails?.phone1 ?? DEFAULT_SUPPORT_PHONE_1,
+      phone2: currentSettings?.contactDetails?.phone2 ?? DEFAULT_SUPPORT_PHONE_2,
+      email: currentSettings?.contactDetails?.email ?? DEFAULT_SUPPORT_EMAIL,
+      location: currentSettings?.contactDetails?.location ?? DEFAULT_SUPPORT_LOCATION,
+    },
     paymentDetails: {
       ...(currentSettings?.paymentDetails ?? {}),
       accountName: shouldApplyDefaultAccountName
@@ -2020,6 +2077,46 @@ app.get("/api/public/referrals/:referralCode/preview", async (req, res) => {
   });
 });
 
+app.get("/api/public/site-info", async (_req, res) => {
+  const settings = await getPublicSettings();
+  return res.json({
+    platformName: settings.platformName,
+    supportEmail: settings.supportEmail,
+    contactDetails: settings.contactDetails,
+    referralRules: settings.referralRules,
+    withdrawalRules: settings.withdrawalRules,
+  });
+});
+
+// Public: return configured referral tiers (for frontend display)
+app.get("/api/public/referral-tiers", async (_req, res) => {
+  return res.json({ tiers: DEFAULT_REFERRAL_TIERS });
+});
+
+// Authenticated: return the current user's referral rank (points + tier + percents)
+app.get("/api/user/referral-rank", authenticate, async (req: AuthenticatedRequest, res) => {
+  const user = await getUserById(req.authUser!.id);
+  if (!user) return res.status(404).json({ message: "User not found." });
+
+  const totalPoints = await getUserPoints(user.id);
+
+  // find best matching tier
+  let matched: (typeof DEFAULT_REFERRAL_TIERS)[number] | null = null;
+  for (const tier of DEFAULT_REFERRAL_TIERS) {
+    if (totalPoints >= tier.pointsRequired) matched = tier;
+  }
+
+  const percents = matched
+    ? { direct: matched.directPercent, indirect: matched.indirectPercent, team: matched.teamPercent }
+    : { direct: DEFAULT_REFERRAL_RULES.level1Percent, indirect: DEFAULT_REFERRAL_RULES.level2Percent, team: DEFAULT_REFERRAL_RULES.level3Percent };
+
+  return res.json({
+    totalPoints,
+    tier: matched ?? null,
+    percents,
+  });
+});
+
 app.get("/api/user/rewards", authenticate, async (req: AuthenticatedRequest, res) => {
   const user = await getUserById(req.authUser!.id);
   if (!user) {
@@ -2059,6 +2156,9 @@ app.post("/api/user/rewards/claim", authenticate, async (req: AuthenticatedReque
   );
   if (!milestone) {
     return res.status(404).json({ message: "Reward milestone not found." });
+  }
+  if (milestone.rewardAmount <= 0) {
+    return res.status(400).json({ message: "This milestone does not have a claimable cash reward." });
   }
 
   const rewardProgress = await getRewardMilestoneSummary(user.id);
@@ -3101,6 +3201,12 @@ app.put("/api/admin/settings", authenticate, requireAdmin, async (req: Authentic
       $set: normalizeSettings({
         platformName: body.platformName,
         supportEmail: body.supportEmail,
+        contactDetails: {
+          phone1: body.contactDetails.phone1,
+          phone2: body.contactDetails.phone2,
+          email: body.contactDetails.email,
+          location: body.contactDetails.location,
+        },
         enableRegistrations: body.enableRegistrations,
         maintenanceMode: body.maintenanceMode,
         paymentDetails: {
