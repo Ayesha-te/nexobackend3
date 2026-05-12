@@ -63,7 +63,7 @@ const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
 const DEFAULT_DRAW_DAYS = 30;
 const DEFAULT_ANNOUNCEMENT_TITLE = "Join, Build Your Team & Start Earning";
 const DEFAULT_ANNOUNCEMENT_MESSAGE =
-  "Choose from 1000 to 15000 PKR plans, earn 3-level referral income, unlock rewards up to 35,000 PKR, and withdraw from 1000 PKR with 10% tax in 24-48 hours.";
+  "Choose from 500 to 15000 PKR plans, earn 3-step referral income, unlock rewards up to 35,000 PKR, and withdraw from 500 PKR with 10% tax in 24-48 hours.";
 const IS_VERCEL = Boolean(process.env.VERCEL);
 
 // MongoDB setup - removed JSON database variables
@@ -615,37 +615,37 @@ function getDefaultPlanBenefits(price: number, points: number) {
     1000: [
       `${points} reward points on approval`,
       "No Courses",
-      "Eligible for 3-level referral income",
+      "Eligible for 3-step referral income",
     ],
     2000: [
       `${points} reward points on approval`,
       "No Courses",
-      "Eligible for 3-level referral income",
+      "Eligible for 3-step referral income",
     ],
     4000: [
       `${points} reward points on approval`,
       "5 Courses (2 Mandatory + 3 Choice)",
-      "Eligible for 3-level referral income",
+      "Eligible for 3-step referral income",
     ],
     6500: [
       `${points} reward points on approval`,
       "10 Courses (2 Mandatory + 8 Choice)",
-      "Eligible for 3-level referral income",
+      "Eligible for 3-step referral income",
     ],
     9500: [
       `${points} reward points on approval`,
       "15 Courses (3 Mandatory + 12 Choice)",
-      "Eligible for 3-level referral income",
+      "Eligible for 3-step referral income",
     ],
     12000: [
       `${points} reward points on approval`,
       "25 Courses (3 Mandatory + 22 Choice)",
-      "Eligible for 3-level referral income",
+      "Eligible for 3-step referral income",
     ],
     15000: [
       `${points} reward points on approval`,
       "35+ Courses (All Access)",
-      "Eligible for 3-level referral income",
+      "Eligible for 3-step referral income",
     ],
   };
 
@@ -1688,11 +1688,21 @@ app.post("/api/auth/register", async (req, res) => {
   };
 
   await collections.users.insertOne(user);
+  // Credit signup bonus (PKR 50) as a wallet transaction and notify user
+  await addWalletCredit(
+    user.id,
+    "referral_commission",
+    50,
+    "Signup bonus credited",
+    user.id,
+    "signup_bonus",
+  );
+
   await addNotification(
     user.id,
     "system",
     "Welcome to Nexo Women Earning System",
-    "Your account is ready. Choose a plan, collect points, and start building your 3-level team.",
+    "Your account is ready. PKR 50 signup bonus has been credited to your wallet. Choose a plan, collect points, and start building your 3-step team.",
   );
 
   if (referredByUserId) {

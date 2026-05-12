@@ -142,7 +142,7 @@ export const DEFAULT_REWARD_MILESTONES = [
 ] as const;
 
 export const DEFAULT_WITHDRAWAL_RULES = {
-  minimumAmount: 1000,
+  minimumAmount: 500,
   taxPercent: 10,
   dailyLimitMin: 5000,
   dailyLimitMax: 5000,
