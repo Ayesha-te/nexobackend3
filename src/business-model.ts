@@ -4,6 +4,9 @@ export const DEFAULT_INVESTMENT_PLANS = [
     name: "Plan 1",
     price: 1000,
     points: 6,
+    level1Percent: 48,
+    level2Percent: 18,
+    level3Percent: 10,
     benefits: [
       "6 reward points on approval",
       "No Courses",
@@ -18,6 +21,9 @@ export const DEFAULT_INVESTMENT_PLANS = [
     name: "Plan 2",
     price: 2000,
     points: 12,
+    level1Percent: 48,
+    level2Percent: 18,
+    level3Percent: 10,
     benefits: [
       "12 reward points on approval",
       "No Courses",
@@ -32,6 +38,9 @@ export const DEFAULT_INVESTMENT_PLANS = [
     name: "Plan 3",
     price: 4000,
     points: 30,
+    level1Percent: 48,
+    level2Percent: 18,
+    level3Percent: 10,
     benefits: [
       "30 reward points on approval",
       "5 Courses (2 Mandatory + 3 Choice)",
@@ -45,6 +54,9 @@ export const DEFAULT_INVESTMENT_PLANS = [
     name: "Plan 4",
     price: 6500,
     points: 44,
+    level1Percent: 48,
+    level2Percent: 18,
+    level3Percent: 10,
     benefits: [
       "44 reward points on approval",
       "10 Courses (2 Mandatory + 8 Choice)",
@@ -58,6 +70,9 @@ export const DEFAULT_INVESTMENT_PLANS = [
     name: "Plan 5",
     price: 9500,
     points: 63,
+    level1Percent: 48,
+    level2Percent: 18,
+    level3Percent: 10,
     benefits: [
       "63 reward points on approval",
       "15 Courses (3 Mandatory + 12 Choice)",
@@ -71,6 +86,9 @@ export const DEFAULT_INVESTMENT_PLANS = [
     name: "Plan 6",
     price: 12000,
     points: 80,
+    level1Percent: 48,
+    level2Percent: 18,
+    level3Percent: 10,
     benefits: [
       "80 reward points on approval",
       "25 Courses (3 Mandatory + 22 Choice)",
@@ -84,6 +102,9 @@ export const DEFAULT_INVESTMENT_PLANS = [
     name: "Plan 7",
     price: 15000,
     points: 100,
+    level1Percent: 48,
+    level2Percent: 18,
+    level3Percent: 10,
     benefits: [
       "100 reward points on approval",
       "35+ Courses (All Access)",

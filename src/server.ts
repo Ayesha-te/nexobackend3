@@ -63,7 +63,7 @@ const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
 const DEFAULT_DRAW_DAYS = 30;
 const DEFAULT_ANNOUNCEMENT_TITLE = "Join, Build Your Team & Start Earning";
 const DEFAULT_ANNOUNCEMENT_MESSAGE =
-  "Choose from 1000 to 15000 PKR plans, earn 48% / 18% / 10% referral income, unlock rewards up to 35,000 PKR, and withdraw from 1000 PKR with 10% tax in 24-48 hours.";
+  "Choose from 1000 to 15000 PKR plans, earn 3-level referral income, unlock rewards up to 35,000 PKR, and withdraw from 1000 PKR with 10% tax in 24-48 hours.";
 const IS_VERCEL = Boolean(process.env.VERCEL);
 
 // MongoDB setup - removed JSON database variables
@@ -155,6 +155,9 @@ type Plan = {
   name: string;
   price: number;
   points: number;
+  level1Percent: number;
+  level2Percent: number;
+  level3Percent: number;
   benefits: string[];
   featured: boolean;
   active: boolean;
@@ -562,6 +565,9 @@ const adminPlanSchema = z.object({
   name: z.string().trim().min(1),
   price: z.number().positive(),
   points: z.number().int().positive(),
+  level1Percent: z.number().min(0).max(100),
+  level2Percent: z.number().min(0).max(100),
+  level3Percent: z.number().min(0).max(100),
   benefits: z.array(z.string().trim()).optional().default([]),
   featured: z.boolean().optional().default(false),
   active: z.boolean().optional().default(true),
@@ -890,6 +896,21 @@ function normalizePlan(plan: any): Plan {
     name: String(plan.name),
     price: Number(plan.price),
     points: Number(plan.points ?? 0),
+    level1Percent: Number(
+      typeof plan.level1Percent === "number"
+        ? plan.level1Percent
+        : DEFAULT_REFERRAL_RULES.level1Percent,
+    ),
+    level2Percent: Number(
+      typeof plan.level2Percent === "number"
+        ? plan.level2Percent
+        : DEFAULT_REFERRAL_RULES.level2Percent,
+    ),
+    level3Percent: Number(
+      typeof plan.level3Percent === "number"
+        ? plan.level3Percent
+        : DEFAULT_REFERRAL_RULES.level3Percent,
+    ),
     benefits: Array.isArray(plan.benefits) ? plan.benefits.map(String) : [],
     featured: Boolean(plan.featured),
     active: plan.active !== false,
@@ -1191,35 +1212,17 @@ async function getReferralUplines(user: User, maxLevels = 3) {
 }
 
 async function distributeInvestmentCommissions(user: User, plan: Plan, paymentId: string) {
-  // Use sponsor-specific percentages based on their rank (total points).
-  const settings = await getPublicSettings();
+  // Plan-level percentages are the primary source for level commissions.
   const uplines = await getReferralUplines(user, 3);
 
-  // Helper: get best matching referral tier for a given points total
-  function findTierForPoints(points: number) {
-    // DEFAULT_REFERRAL_TIERS is ordered from lowest to highest threshold; find the
-    // highest tier the points meet.
-    let best = null as null | (typeof DEFAULT_REFERRAL_TIERS)[number];
-    for (const tier of DEFAULT_REFERRAL_TIERS) {
-      if (points >= tier.pointsRequired) {
-        best = tier;
-      }
-    }
-    return best;
-  }
-
   for (const { level, user: sponsor } of uplines) {
-    // Determine sponsor rank by their total points
-    const sponsorPoints = await getUserPoints(sponsor.id);
-    const tier = findTierForPoints(sponsorPoints);
-
     let percentage = 0;
     if (level === 1) {
-      percentage = tier ? tier.directPercent : settings.referralRules.level1Percent;
+      percentage = plan.level1Percent;
     } else if (level === 2) {
-      percentage = tier ? tier.indirectPercent : settings.referralRules.level2Percent;
+      percentage = plan.level2Percent;
     } else if (level === 3) {
-      percentage = tier ? tier.teamPercent : settings.referralRules.level3Percent;
+      percentage = plan.level3Percent;
     }
 
     if (!percentage || percentage <= 0) continue;
@@ -1505,6 +1508,18 @@ async function syncBusinessModel() {
           name: plan.name,
           price: plan.price,
           points: plan.points,
+          level1Percent:
+            typeof existingPlan?.level1Percent === "number"
+              ? existingPlan.level1Percent
+              : plan.level1Percent,
+          level2Percent:
+            typeof existingPlan?.level2Percent === "number"
+              ? existingPlan.level2Percent
+              : plan.level2Percent,
+          level3Percent:
+            typeof existingPlan?.level3Percent === "number"
+              ? existingPlan.level3Percent
+              : plan.level3Percent,
           benefits: normalizePlanBenefits(plan.benefits, plan.points, plan.price),
           featured: plan.featured,
           active: true,
@@ -1734,7 +1749,14 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
     return res.status(404).json({ message: "User not found." });
   }
 
-  const [investmentOrders, walletTransactions, referralSummary, rewardProgress, notifications] =
+  const [
+    investmentOrders,
+    walletTransactions,
+    referralSummary,
+    rewardProgress,
+    notifications,
+    settings,
+  ] =
     await Promise.all([
       getUserInvestmentOrders(user.id),
       getWalletTransactionsForUser(user.id),
@@ -1745,6 +1767,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
         .sort({ createdAt: -1 })
         .limit(8)
         .toArray(),
+      getPublicSettings(),
     ]);
 
   const investments = await Promise.all(
@@ -1795,6 +1818,11 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
     },
     investments,
     referralSummary,
+    referralRules: {
+      level1Percent: settings.referralRules.level1Percent,
+      level2Percent: settings.referralRules.level2Percent,
+      level3Percent: settings.referralRules.level3Percent,
+    },
     rewardProgress: {
       totalPoints: rewardProgress.totalPoints,
       nextMilestone: rewardProgress.nextMilestone,
@@ -2517,6 +2545,9 @@ app.post("/api/admin/plans", authenticate, requireAdmin, async (req: Authenticat
     name: body.name.trim(),
     price: roundCurrency(body.price),
     points: Math.round(body.points),
+    level1Percent: Number(body.level1Percent),
+    level2Percent: Number(body.level2Percent),
+    level3Percent: Number(body.level3Percent),
     benefits: normalizePlanBenefits(body.benefits, Math.round(body.points), Math.round(body.price)),
     featured: body.featured ?? false,
     active: body.active ?? true,
@@ -2533,7 +2564,14 @@ app.post("/api/admin/plans", authenticate, requireAdmin, async (req: Authenticat
     "PLAN_CREATED",
     "plan",
     plan.id,
-    { name: plan.name, price: plan.price, points: plan.points },
+    {
+      name: plan.name,
+      price: plan.price,
+      points: plan.points,
+      level1Percent: plan.level1Percent,
+      level2Percent: plan.level2Percent,
+      level3Percent: plan.level3Percent,
+    },
   );
 
   return res.status(201).json({ plan: await serializeAdminPlan(plan) });
@@ -2558,6 +2596,9 @@ app.put("/api/admin/plans/:id", authenticate, requireAdmin, async (req: Authenti
     name: body.name.trim(),
     price: roundCurrency(body.price),
     points: Math.round(body.points),
+    level1Percent: Number(body.level1Percent),
+    level2Percent: Number(body.level2Percent),
+    level3Percent: Number(body.level3Percent),
     benefits: normalizePlanBenefits(body.benefits, Math.round(body.points), Math.round(body.price)),
     featured: body.featured ?? false,
     active: body.active ?? true,
@@ -2578,7 +2619,14 @@ app.put("/api/admin/plans/:id", authenticate, requireAdmin, async (req: Authenti
     "PLAN_UPDATED",
     "plan",
     planId,
-    { name: nextPlan.name, price: nextPlan.price, points: nextPlan.points },
+    {
+      name: nextPlan.name,
+      price: nextPlan.price,
+      points: nextPlan.points,
+      level1Percent: nextPlan.level1Percent,
+      level2Percent: nextPlan.level2Percent,
+      level3Percent: nextPlan.level3Percent,
+    },
   );
 
   const updatedPlan = await collections.plans.findOne({ id: planId });
