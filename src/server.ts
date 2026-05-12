@@ -1805,7 +1805,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
       .filter((transaction) =>
         ["referral_commission", "investment_commission", "lucky_draw_commission"].includes(
           transaction.type,
-        ),
+        ) && transaction.referenceType !== "signup_bonus",
       )
       .reduce((sum, transaction) => sum + transaction.amount, 0),
   );
@@ -2475,7 +2475,9 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
       .reduce((sum, payment) => sum + payment.amount, 0),
     totalReferralCommissions: walletTransactions
       .filter((transaction) =>
-        ["referral_commission", "investment_commission", "lucky_draw_commission"].includes(transaction.type),
+        ["referral_commission", "investment_commission", "lucky_draw_commission"].includes(
+          transaction.type,
+        ) && transaction.referenceType !== "signup_bonus",
       )
       .reduce((sum, transaction) => sum + transaction.amount, 0),
     totalRewardClaims: rewardClaims.reduce((sum, claim) => sum + claim.rewardAmount, 0),
