@@ -1025,31 +1025,47 @@ async function getReferralLevelUsers(userId: string) {
 }
 
 async function getUserPointsSummary(userId: string) {
-  const [settings, { level1Users, level2Users, level3Users }, personalPoints] = await Promise.all([
+  const [settings, allLevelUsers, personalPoints] = await Promise.all([
     getPublicSettings(),
     getReferralLevelUsers(userId),
     getUserPersonalPoints(userId),
   ]);
 
-  const [level1PointsList, level2PointsList, level3PointsList] = await Promise.all([
-    Promise.all(level1Users.map((referral) => getUserPersonalPoints(referral.id))),
-    Promise.all(level2Users.map((referral) => getUserPersonalPoints(referral.id))),
-    Promise.all(level3Users.map((referral) => getUserPersonalPoints(referral.id))),
-  ]);
+  const { level1Users, level2Users, level3Users } = allLevelUsers;
 
+  // Always get level 1 points (all levels can access 1st level)
+  const level1PointsList = await Promise.all(
+    level1Users.map((referral) => getUserPersonalPoints(referral.id))
+  );
   const level1PointsRaw = level1PointsList.reduce((sum, points) => sum + points, 0);
-  const level2PointsRaw = level2PointsList.reduce((sum, points) => sum + points, 0);
-  const level3PointsRaw = level3PointsList.reduce((sum, points) => sum + points, 0);
-
   const level1Points = Math.floor(
     (level1PointsRaw * settings.referralPointRules.level1Percent) / 100,
   );
+
+  // Always get level 2 points (levels 1-2 can access up to 2 levels)
+  const level2PointsList = await Promise.all(
+    level2Users.map((referral) => getUserPersonalPoints(referral.id))
+  );
+  const level2PointsRaw = level2PointsList.reduce((sum, points) => sum + points, 0);
   const level2Points = Math.floor(
     (level2PointsRaw * settings.referralPointRules.level2Percent) / 100,
   );
-  const level3Points = Math.floor(
-    (level3PointsRaw * settings.referralPointRules.level3Percent) / 100,
-  );
+
+  // Preliminary total with 2 levels
+  const preliminaryTotal = personalPoints + level1Points + level2Points;
+
+  // Check if user qualifies for Level 3 (4000 points required)
+  let level3Points = 0;
+  if (preliminaryTotal >= 4000) {
+    const level3PointsList = await Promise.all(
+      level3Users.map((referral) => getUserPersonalPoints(referral.id))
+    );
+    const level3PointsRaw = level3PointsList.reduce((sum, points) => sum + points, 0);
+    level3Points = Math.floor(
+      (level3PointsRaw * settings.referralPointRules.level3Percent) / 100,
+    );
+  }
+
   const referralPoints = level1Points + level2Points + level3Points;
 
   return {
@@ -1299,7 +1315,13 @@ async function getReferralUplines(user: User, maxLevels = 3) {
 }
 
 async function distributeInvestmentCommissions(user: User, plan: Plan, paymentId: string) {
-  const uplines = await getReferralUplines(user, 3);
+  // Determine max upline levels based on user's tier
+  // Levels 1-2: 2 steps, Level 3+: 3 steps
+  const userPoints = await getUserPoints(user.id);
+  const userTier = getReferralTierByPoints(userPoints);
+  const maxLevels = userTier.pointsRequired >= 4000 ? 3 : 2; // Level 3 (Elevate) = 4000 points
+  
+  const uplines = await getReferralUplines(user, maxLevels);
 
   for (const { level, user: sponsor } of uplines) {
     const sponsorPoints = await getUserPoints(sponsor.id);
