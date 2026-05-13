@@ -120,17 +120,24 @@ export const DEFAULT_REFERRAL_RULES = {
   level2Percent: 18,
   level3Percent: 10,
 } as const;
+
+export const DEFAULT_REFERRAL_POINT_RULES = {
+  level1Percent: 100,
+  level2Percent: 100,
+  level3Percent: 100,
+} as const;
+
 // Referral tiers are exposed to the frontend so it can explain the active rank ladder.
 export const DEFAULT_REFERRAL_TIERS = [
-  { title: "Starter", pointsRequired: 30, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
-  { title: "Vision", pointsRequired: 1000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
-  { title: "Elevate", pointsRequired: 4000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
-  { title: "Sapphire", pointsRequired: 8000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
-  { title: "Ruby", pointsRequired: 20000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
-  { title: "Diamond", pointsRequired: 50000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
-  { title: "Platinum", pointsRequired: 120000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
-  { title: "Elite", pointsRequired: 250000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
-  { title: "Royal", pointsRequired: 400000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Starter", pointsRequired: 30, directPercent: 28, indirectPercent: 16, teamPercent: 0 },
+  { title: "Vision", pointsRequired: 1000, directPercent: 30, indirectPercent: 16, teamPercent: 0 },
+  { title: "Elevate", pointsRequired: 4000, directPercent: 33, indirectPercent: 16, teamPercent: 3 },
+  { title: "Sapphire", pointsRequired: 8000, directPercent: 35, indirectPercent: 16, teamPercent: 4 },
+  { title: "Ruby", pointsRequired: 20000, directPercent: 37, indirectPercent: 17, teamPercent: 5 },
+  { title: "Diamond", pointsRequired: 50000, directPercent: 39, indirectPercent: 17, teamPercent: 6 },
+  { title: "Platinum", pointsRequired: 120000, directPercent: 41, indirectPercent: 18, teamPercent: 7 },
+  { title: "Elite", pointsRequired: 250000, directPercent: 43, indirectPercent: 18, teamPercent: 8 },
+  { title: "Royal", pointsRequired: 400000, directPercent: 46, indirectPercent: 18, teamPercent: 9 },
   { title: "Imperial", pointsRequired: 500000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
 ] as const;
 export const DEFAULT_REWARD_MILESTONES = [

@@ -19,6 +19,7 @@ import { z } from "zod";
 import { MongoClient, Db, Collection } from "mongodb";
 import {
   DEFAULT_INVESTMENT_PLANS,
+  DEFAULT_REFERRAL_POINT_RULES,
   DEFAULT_REFERRAL_RULES,
   DEFAULT_REFERRAL_TIERS,
   DEFAULT_REWARD_MILESTONES,
@@ -336,6 +337,11 @@ type Settings = {
     level2Percent: number;
     level3Percent: number;
   };
+  referralPointRules: {
+    level1Percent: number;
+    level2Percent: number;
+    level3Percent: number;
+  };
   rewardMilestones: RewardMilestone[];
   withdrawalRules: {
     minimumAmount: number;
@@ -538,6 +544,11 @@ const settingsSchema = z.object({
     instructions: z.string().trim().min(1),
   }),
   referralRules: z.object({
+    level1Percent: z.number().min(0).max(100),
+    level2Percent: z.number().min(0).max(100),
+    level3Percent: z.number().min(0).max(100),
+  }),
+  referralPointRules: z.object({
     level1Percent: z.number().min(0).max(100),
     level2Percent: z.number().min(0).max(100),
     level3Percent: z.number().min(0).max(100),
@@ -857,6 +868,17 @@ function normalizeSettings(settings?: Partial<Settings> | null): Settings {
       level3Percent:
         settings?.referralRules?.level3Percent ?? DEFAULT_REFERRAL_RULES.level3Percent,
     },
+    referralPointRules: {
+      level1Percent:
+        settings?.referralPointRules?.level1Percent ??
+        DEFAULT_REFERRAL_POINT_RULES.level1Percent,
+      level2Percent:
+        settings?.referralPointRules?.level2Percent ??
+        DEFAULT_REFERRAL_POINT_RULES.level2Percent,
+      level3Percent:
+        settings?.referralPointRules?.level3Percent ??
+        DEFAULT_REFERRAL_POINT_RULES.level3Percent,
+    },
     rewardMilestones:
       settings?.rewardMilestones?.length === DEFAULT_REWARD_MILESTONES.length
         ? settings.rewardMilestones
@@ -965,10 +987,86 @@ async function getUserInvestmentOrders(userId: string, status?: InvestmentStatus
   return (await collections.investmentOrders.find(query).sort({ createdAt: -1 }).toArray()) as unknown as InvestmentOrder[];
 }
 
-async function getUserPoints(userId: string) {
+async function getUserPersonalPoints(userId: string) {
   const orders = await getUserInvestmentOrders(userId, "active");
   const plans = await Promise.all(orders.map((order) => getPlanById(order.planId)));
   return plans.reduce((sum, plan) => sum + Number(plan?.points ?? 0), 0);
+}
+
+async function getReferralLevelUsers(userId: string) {
+  const level1Users = (await collections.users.find({
+    referredByUserId: userId,
+    role: "user",
+  }).toArray()) as unknown as User[];
+  const level1Ids = level1Users.map((user) => user.id);
+
+  const level2Users =
+    level1Ids.length > 0
+      ? ((await collections.users.find({
+          referredByUserId: { $in: level1Ids },
+          role: "user",
+        }).toArray()) as unknown as User[])
+      : [];
+  const level2Ids = level2Users.map((user) => user.id);
+
+  const level3Users =
+    level2Ids.length > 0
+      ? ((await collections.users.find({
+          referredByUserId: { $in: level2Ids },
+          role: "user",
+        }).toArray()) as unknown as User[])
+      : [];
+
+  return {
+    level1Users,
+    level2Users,
+    level3Users,
+  };
+}
+
+async function getUserPointsSummary(userId: string) {
+  const [settings, { level1Users, level2Users, level3Users }, personalPoints] = await Promise.all([
+    getPublicSettings(),
+    getReferralLevelUsers(userId),
+    getUserPersonalPoints(userId),
+  ]);
+
+  const [level1PointsList, level2PointsList, level3PointsList] = await Promise.all([
+    Promise.all(level1Users.map((referral) => getUserPersonalPoints(referral.id))),
+    Promise.all(level2Users.map((referral) => getUserPersonalPoints(referral.id))),
+    Promise.all(level3Users.map((referral) => getUserPersonalPoints(referral.id))),
+  ]);
+
+  const level1PointsRaw = level1PointsList.reduce((sum, points) => sum + points, 0);
+  const level2PointsRaw = level2PointsList.reduce((sum, points) => sum + points, 0);
+  const level3PointsRaw = level3PointsList.reduce((sum, points) => sum + points, 0);
+
+  const level1Points = Math.floor(
+    (level1PointsRaw * settings.referralPointRules.level1Percent) / 100,
+  );
+  const level2Points = Math.floor(
+    (level2PointsRaw * settings.referralPointRules.level2Percent) / 100,
+  );
+  const level3Points = Math.floor(
+    (level3PointsRaw * settings.referralPointRules.level3Percent) / 100,
+  );
+  const referralPoints = level1Points + level2Points + level3Points;
+
+  return {
+    personalPoints,
+    referralPoints,
+    totalPoints: personalPoints + referralPoints,
+    referralBreakdown: {
+      level1Points,
+      level2Points,
+      level3Points,
+    },
+  };
+}
+
+async function getUserPoints(userId: string) {
+  const summary = await getUserPointsSummary(userId);
+  return summary.totalPoints;
 }
 
 async function getUserActiveInvestmentValue(userId: string) {
@@ -1009,6 +1107,16 @@ async function getAvailableWalletBalance(userId: string) {
 
 async function getWalletTransactionsForUser(userId: string) {
   return (await collections.walletTransactions.find({ userId }).sort({ createdAt: -1 }).toArray()) as unknown as WalletTransaction[];
+}
+
+function getReferralTierByPoints(totalPoints: number) {
+  let matched: (typeof DEFAULT_REFERRAL_TIERS)[number] = DEFAULT_REFERRAL_TIERS[0];
+  for (const tier of DEFAULT_REFERRAL_TIERS) {
+    if (totalPoints >= tier.pointsRequired) {
+      matched = tier;
+    }
+  }
+  return matched;
 }
 
 async function serializeUser(user: User, req: express.Request | null = null) {
@@ -1118,28 +1226,7 @@ async function addWalletDebit(
 }
 
 async function getReferralCounts(userId: string) {
-  const level1Users = (await collections.users.find({
-    referredByUserId: userId,
-    role: "user",
-  }).toArray()) as unknown as User[];
-  const level1Ids = level1Users.map((user) => user.id);
-
-  const level2Users =
-    level1Ids.length > 0
-      ? ((await collections.users.find({
-          referredByUserId: { $in: level1Ids },
-          role: "user",
-        }).toArray()) as unknown as User[])
-      : [];
-  const level2Ids = level2Users.map((user) => user.id);
-
-  const level3Users =
-    level2Ids.length > 0
-      ? ((await collections.users.find({
-          referredByUserId: { $in: level2Ids },
-          role: "user",
-        }).toArray()) as unknown as User[])
-      : [];
+  const { level1Users, level2Users, level3Users } = await getReferralLevelUsers(userId);
 
   const directUsers = await Promise.all(
     level1Users.map(async (referral) => ({
@@ -1148,7 +1235,7 @@ async function getReferralCounts(userId: string) {
       email: referral.email,
       accountType: referral.accountType,
       joinedAt: referral.createdAt,
-      totalPoints: await getUserPoints(referral.id),
+      totalPoints: await getUserPersonalPoints(referral.id),
       activeInvestmentValue: await getUserActiveInvestmentValue(referral.id),
     })),
   );
@@ -1212,17 +1299,18 @@ async function getReferralUplines(user: User, maxLevels = 3) {
 }
 
 async function distributeInvestmentCommissions(user: User, plan: Plan, paymentId: string) {
-  // Plan-level percentages are the primary source for level commissions.
   const uplines = await getReferralUplines(user, 3);
 
   for (const { level, user: sponsor } of uplines) {
+    const sponsorPoints = await getUserPoints(sponsor.id);
+    const sponsorTier = getReferralTierByPoints(sponsorPoints);
     let percentage = 0;
     if (level === 1) {
-      percentage = plan.level1Percent;
+      percentage = sponsorTier.directPercent;
     } else if (level === 2) {
-      percentage = plan.level2Percent;
+      percentage = sponsorTier.indirectPercent;
     } else if (level === 3) {
-      percentage = plan.level3Percent;
+      percentage = sponsorTier.teamPercent;
     }
 
     if (!percentage || percentage <= 0) continue;
@@ -2085,10 +2173,29 @@ app.get("/api/user/referrals", authenticate, async (req: AuthenticatedRequest, r
     return res.status(404).json({ message: "User not found." });
   }
 
+  const [summary, pointsSummary] = await Promise.all([
+    getReferralCounts(user.id),
+    getUserPointsSummary(user.id),
+  ]);
+  const tier = getReferralTierByPoints(pointsSummary.totalPoints);
+
   return res.json({
     user: await serializeUser(user, req),
     settings: (await getPublicSettings()).referralRules,
-    summary: await getReferralCounts(user.id),
+    summary,
+    rank: {
+      totalPoints: pointsSummary.totalPoints,
+      personalPoints: pointsSummary.personalPoints,
+      referralPoints: pointsSummary.referralPoints,
+      referralBreakdown: pointsSummary.referralBreakdown,
+      pointRules: (await getPublicSettings()).referralPointRules,
+      tier,
+      percents: {
+        direct: tier.directPercent,
+        indirect: tier.indirectPercent,
+        team: tier.teamPercent,
+      },
+    },
   });
 });
 
@@ -2122,6 +2229,7 @@ app.get("/api/public/site-info", async (_req, res) => {
     supportEmail: settings.supportEmail,
     contactDetails: settings.contactDetails,
     referralRules: settings.referralRules,
+    referralPointRules: settings.referralPointRules,
     withdrawalRules: settings.withdrawalRules,
   });
 });
@@ -2136,21 +2244,20 @@ app.get("/api/user/referral-rank", authenticate, async (req: AuthenticatedReques
   const user = await getUserById(req.authUser!.id);
   if (!user) return res.status(404).json({ message: "User not found." });
 
-  const totalPoints = await getUserPoints(user.id);
-
-  // find best matching tier
-  let matched: (typeof DEFAULT_REFERRAL_TIERS)[number] | null = null;
-  for (const tier of DEFAULT_REFERRAL_TIERS) {
-    if (totalPoints >= tier.pointsRequired) matched = tier;
-  }
-
-  const percents = matched
-    ? { direct: matched.directPercent, indirect: matched.indirectPercent, team: matched.teamPercent }
-    : { direct: DEFAULT_REFERRAL_RULES.level1Percent, indirect: DEFAULT_REFERRAL_RULES.level2Percent, team: DEFAULT_REFERRAL_RULES.level3Percent };
+  const pointsSummary = await getUserPointsSummary(user.id);
+  const tier = getReferralTierByPoints(pointsSummary.totalPoints);
+  const percents = {
+    direct: tier.directPercent,
+    indirect: tier.indirectPercent,
+    team: tier.teamPercent,
+  };
 
   return res.json({
-    totalPoints,
-    tier: matched ?? null,
+    totalPoints: pointsSummary.totalPoints,
+    personalPoints: pointsSummary.personalPoints,
+    referralPoints: pointsSummary.referralPoints,
+    referralBreakdown: pointsSummary.referralBreakdown,
+    tier,
     percents,
   });
 });
@@ -3279,6 +3386,11 @@ app.put("/api/admin/settings", authenticate, requireAdmin, async (req: Authentic
           level1Percent: body.referralRules.level1Percent,
           level2Percent: body.referralRules.level2Percent,
           level3Percent: body.referralRules.level3Percent,
+        },
+        referralPointRules: {
+          level1Percent: body.referralPointRules.level1Percent,
+          level2Percent: body.referralPointRules.level2Percent,
+          level3Percent: body.referralPointRules.level3Percent,
         },
         rewardMilestones: body.rewardMilestones.map((milestone) => ({
           pointsRequired: milestone.pointsRequired,
