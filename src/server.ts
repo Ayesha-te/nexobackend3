@@ -1091,6 +1091,21 @@ async function getUserActiveInvestmentValue(userId: string) {
   return roundCurrency(plans.reduce((sum, plan) => sum + Number(plan?.price ?? 0), 0));
 }
 
+async function hasActiveInvestment(userId: string) {
+  const activeInvestmentCount = await collections.investmentOrders.countDocuments({
+    userId,
+    status: "active",
+  });
+  return activeInvestmentCount > 0;
+}
+
+async function canUserRefer(user: User) {
+  if (user.role === "admin") {
+    return true;
+  }
+  return hasActiveInvestment(user.id);
+}
+
 async function getRewardClaimsForUser(userId: string) {
   return (await collections.rewardClaims.find({ userId }).sort({ claimedAt: -1 }).toArray()) as unknown as RewardClaim[];
 }
@@ -1137,6 +1152,7 @@ function getReferralTierByPoints(totalPoints: number) {
 
 async function serializeUser(user: User, req: express.Request | null = null) {
   const sponsor = user.referredByUserId ? await getUserById(user.referredByUserId) : null;
+  const referralLinkEnabled = await canUserRefer(user);
   return {
     id: user.id,
     role: user.role,
@@ -1147,8 +1163,8 @@ async function serializeUser(user: User, req: express.Request | null = null) {
     referredByUserId: user.referredByUserId,
     sponsorName: sponsor?.name ?? null,
     sponsorReferralCode: sponsor?.referralCode ?? null,
-    referralLinkEnabled: true,
-    referralLink: getReferralLink(req, user.referralCode),
+    referralLinkEnabled,
+    referralLink: referralLinkEnabled ? getReferralLink(req, user.referralCode) : null,
     accountType: user.accountType,
     walletBalance: await getWalletBalance(user.id),
     createdAt: user.createdAt,
@@ -1776,6 +1792,13 @@ app.post("/api/auth/register", async (req, res) => {
   if (body.referralCode) {
     const referrer = await collections.users.findOne({ referralCode: body.referralCode });
     if (referrer) {
+      const referrerUser = referrer as unknown as User;
+      if (!(await canUserRefer(referrerUser))) {
+        return res.status(400).json({
+          message:
+            "This referral code is locked. Sponsor must have at least one approved investment.",
+        });
+      }
       referredByUserId = referrer.id;
     }
   }
@@ -2229,6 +2252,10 @@ app.get("/api/public/referrals/:referralCode/preview", async (req, res) => {
 
   if (!sponsor) {
     return res.status(404).json({ message: "Referral link not found." });
+  }
+
+  if (!(await canUserRefer(sponsor))) {
+    return res.status(404).json({ message: "Referral link is not active yet." });
   }
 
   return res.json({
