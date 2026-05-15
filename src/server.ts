@@ -133,6 +133,7 @@ type NotificationType = "system" | "payment" | "commission" | "reward" | "withdr
 type DrawStatus = "open" | "completed";
 
 type WithdrawalRequestStatus = "pending" | "approved" | "rejected";
+type WithdrawalAccountType = "easypaisa" | "jazzcash" | "bank_transfer";
 
 type User = {
   id: string;
@@ -267,6 +268,8 @@ type WithdrawalRequest = {
   taxPercent: number;
   taxAmount: number;
   netAmount: number;
+  accountType: WithdrawalAccountType;
+  accountDetails: string;
   status: WithdrawalRequestStatus;
   note: string;
   reviewNote: string;
@@ -518,6 +521,8 @@ const rewardClaimSchema = z.object({
 
 const withdrawalRequestSchema = z.object({
   amount: z.number().positive(),
+  accountType: z.enum(["easypaisa", "jazzcash", "bank_transfer"]),
+  accountDetails: z.string().trim().min(3).max(120),
   note: z.string().trim().optional(),
 });
 
@@ -1138,6 +1143,33 @@ async function getAvailableWalletBalance(userId: string) {
 
 async function getWalletTransactionsForUser(userId: string) {
   return (await collections.walletTransactions.find({ userId }).sort({ createdAt: -1 }).toArray()) as unknown as WalletTransaction[];
+}
+
+function normalizeWithdrawalRequest(raw: any): WithdrawalRequest {
+  const accountType: WithdrawalAccountType =
+    raw?.accountType === "easypaisa" || raw?.accountType === "jazzcash"
+      ? raw.accountType
+      : "bank_transfer";
+
+  return {
+    id: String(raw?.id ?? ""),
+    userId: String(raw?.userId ?? ""),
+    amount: Number(raw?.amount ?? 0),
+    taxPercent: Number(raw?.taxPercent ?? 0),
+    taxAmount: Number(raw?.taxAmount ?? 0),
+    netAmount: Number(raw?.netAmount ?? 0),
+    accountType,
+    accountDetails: typeof raw?.accountDetails === "string" ? raw.accountDetails : "",
+    status: raw?.status === "approved" || raw?.status === "rejected" ? raw.status : "pending",
+    note: typeof raw?.note === "string" ? raw.note : "",
+    reviewNote: typeof raw?.reviewNote === "string" ? raw.reviewNote : "",
+    createdAt: typeof raw?.createdAt === "string" ? raw.createdAt : nowIso(),
+    reviewedAt: typeof raw?.reviewedAt === "string" || raw?.reviewedAt === null ? raw.reviewedAt : null,
+    reviewedByUserId:
+      typeof raw?.reviewedByUserId === "string" || raw?.reviewedByUserId === null
+        ? raw.reviewedByUserId
+        : null,
+  };
 }
 
 function getReferralTierByPoints(totalPoints: number) {
@@ -2497,7 +2529,7 @@ app.get("/api/user/wallet", authenticate, async (req: AuthenticatedRequest, res)
     reservedAmount: roundCurrency(balance - availableBalance),
     rules: settings.withdrawalRules,
     transactions,
-    withdrawals: withdrawals as unknown as WithdrawalRequest[],
+    withdrawals: (withdrawals as unknown as any[]).map((item) => normalizeWithdrawalRequest(item)),
   });
 });
 
@@ -2559,6 +2591,8 @@ app.post("/api/user/withdrawals", authenticate, async (req: AuthenticatedRequest
     taxPercent: settings.withdrawalRules.taxPercent,
     taxAmount,
     netAmount: roundCurrency(body.amount - taxAmount),
+    accountType: body.accountType,
+    accountDetails: body.accountDetails.trim(),
     status: "pending",
     note: body.note?.trim() ?? "",
     reviewNote: "",
@@ -2579,7 +2613,12 @@ app.post("/api/user/withdrawals", authenticate, async (req: AuthenticatedRequest
     "WITHDRAWAL_REQUESTED",
     "withdrawal",
     requestRecord.id,
-    { amount: requestRecord.amount, netAmount: requestRecord.netAmount },
+    {
+      amount: requestRecord.amount,
+      netAmount: requestRecord.netAmount,
+      accountType: requestRecord.accountType,
+      accountDetails: requestRecord.accountDetails,
+    },
   );
 
   return res.status(201).json({ request: requestRecord });
@@ -2687,6 +2726,16 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
           id: request.id,
           amount: request.amount,
           netAmount: request.netAmount,
+          accountType:
+            request.accountType === "easypaisa" ||
+            request.accountType === "jazzcash" ||
+            request.accountType === "bank_transfer"
+              ? request.accountType
+              : "bank_transfer",
+          accountDetails:
+            typeof request.accountDetails === "string" && request.accountDetails.trim().length > 0
+              ? request.accountDetails
+              : "-",
           status: request.status,
           createdAt: request.createdAt,
           user: user ? { name: user.name, email: user.email } : null,
@@ -3309,9 +3358,10 @@ app.get("/api/admin/withdrawals", authenticate, requireAdmin, async (_req, res) 
   const requests = (await collections.withdrawalRequests.find({}).sort({ createdAt: -1 }).toArray()) as unknown as WithdrawalRequest[];
   const items = await Promise.all(
     requests.map(async (request) => {
-      const user = await getUserById(request.userId);
+      const normalizedRequest = normalizeWithdrawalRequest(request);
+      const user = await getUserById(normalizedRequest.userId);
       return {
-        ...request,
+        ...normalizedRequest,
         user: user ? { id: user.id, name: user.name, email: user.email } : null,
       };
     }),
