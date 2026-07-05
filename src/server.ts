@@ -59,11 +59,6 @@ const DEFAULT_ACCOUNT_NUMBER = "03448252109";
 const DEFAULT_BANK_NAME = "EasyPaisa";
 const DEFAULT_PAYMENT_INSTRUCTIONS =
   "Send payment to this EasyPaisa account and submit your transaction ID or proof screenshot for admin approval.";
-const PIN_PRICE = 1000;
-const MIN_PIN_PURCHASE_QUANTITY = 1;
-const MAX_PIN_PURCHASE_QUANTITY = 1000;
-const PIN_PURCHASE_DISABLED_MESSAGE =
-  "PIN/Token Purchase is temporarily unavailable. Please try again later.";
 const DEFAULT_DRAW_ENTRY_FEE = 500;
 const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
 const DEFAULT_DRAW_DAYS = 30;
@@ -97,8 +92,6 @@ let collections: {
   rewardClaims: Collection;
   withdrawalRequests: Collection;
   feedbacks: Collection;
-  pinPurchaseRequests: Collection;
-  pins: Collection;
 };
 let mongoConnectPromise: Promise<void> | null = null;
 let backendDatabaseReady = false;
@@ -141,8 +134,6 @@ type DrawStatus = "open" | "completed";
 
 type WithdrawalRequestStatus = "pending" | "approved" | "rejected";
 type WithdrawalAccountType = "easypaisa" | "jazzcash" | "bank_transfer";
-type PinPurchaseRequestStatus = "pending" | "approved" | "rejected";
-type PinStatus = "available" | "used";
 
 type User = {
   id: string;
@@ -287,35 +278,6 @@ type WithdrawalRequest = {
   reviewedByUserId: string | null;
 };
 
-type PinPurchaseRequest = {
-  id: string;
-  userId: string;
-  accountNumber: string;
-  trxId: string;
-  amount: number;
-  quantity: number;
-  status: PinPurchaseRequestStatus;
-  screenshotPath: string;
-  screenshotOriginalFileName: string | null;
-  screenshotMimeType: string | null;
-  generatedPins: string[];
-  requestedAt: string;
-  processedAt: string | null;
-  reviewedByUserId: string | null;
-};
-
-type PinToken = {
-  id: string;
-  userId: string;
-  requestId: string;
-  token: string;
-  amount: number;
-  status: PinStatus;
-  purchasedAt: string;
-  usedAt: string | null;
-  usedBy: string | null;
-};
-
 type Notification = {
   id: string;
   userId: string;
@@ -372,8 +334,6 @@ type Settings = {
     accountNumber: string;
     bankName: string;
     instructions: string;
-    pinPurchaseEnabled: boolean;
-    qrCodePath: string | null;
   };
   referralRules: {
     level1Percent: number;
@@ -587,8 +547,6 @@ const settingsSchema = z.object({
     accountNumber: z.string().trim().min(1),
     bankName: z.string().trim().min(1),
     instructions: z.string().trim().min(1),
-    pinPurchaseEnabled: z.boolean().optional(),
-    qrCodePath: z.string().nullable().optional(),
   }),
   referralRules: z.object({
     level1Percent: z.number().min(0).max(100),
@@ -617,14 +575,6 @@ const settingsSchema = z.object({
     title: z.string().trim().min(1),
     message: z.string().trim().min(1),
   }),
-});
-
-const pinSettingsSchema = z.object({
-  purchaseEnabled: z.preprocess((value) => value === true || value === "true", z.boolean()),
-  accountTitle: z.string().trim().min(1),
-  accountNumber: z.string().trim().min(1),
-  paymentMethod: z.enum(["JazzCash", "Easypaisa", "EasyPaisa", "Bank Account"]),
-  instructions: z.string().trim().min(1),
 });
 
 const adminPlanSchema = z.object({
@@ -869,53 +819,6 @@ function serializePaymentSubmission(
   };
 }
 
-function serializePinPaymentSettings(settings: Settings, req: express.Request | null = null) {
-  return {
-    purchaseEnabled: settings.paymentDetails.pinPurchaseEnabled,
-    disabledMessage: PIN_PURCHASE_DISABLED_MESSAGE,
-    pinPrice: PIN_PRICE,
-    minQuantity: MIN_PIN_PURCHASE_QUANTITY,
-    maxQuantity: MAX_PIN_PURCHASE_QUANTITY,
-    paymentDetails: {
-      accountTitle: settings.paymentDetails.accountName,
-      accountNumber: settings.paymentDetails.accountNumber,
-      paymentMethod: settings.paymentDetails.bankName,
-      instructions: settings.paymentDetails.instructions,
-      qrCodeUrl: getPublicFileUrl(req, settings.paymentDetails.qrCodePath),
-    },
-  };
-}
-
-function serializePinPurchaseRequest(
-  request: PinPurchaseRequest,
-  req: express.Request | null = null,
-  user?: User | null,
-) {
-  return {
-    id: request.id,
-    userId: request.userId,
-    userName: user?.name ?? "Unknown",
-    accountNumber: request.accountNumber,
-    trxId: request.trxId,
-    amount: request.amount,
-    quantity: request.quantity,
-    status: request.status,
-    requestedAt: request.requestedAt,
-    processedAt: request.processedAt,
-    generatedPins: request.generatedPins ?? [],
-    screenshotUrl: getPublicFileUrl(req, request.screenshotPath),
-  };
-}
-
-function generatePinToken() {
-  const segment = () => randomBytes(2).toString("hex").toUpperCase();
-  return `NXK-${segment()}-${segment()}-${segment()}-${segment()}`;
-}
-
-async function getAvailablePinCount(userId: string) {
-  return collections.pins.countDocuments({ userId, status: "available" });
-}
-
 function createToken(user: RequestUser) {
   return jwt.sign(
     { userId: user.id, role: user.role, email: user.email },
@@ -961,8 +864,6 @@ function normalizeSettings(settings?: Partial<Settings> | null): Settings {
       accountNumber: settings?.paymentDetails?.accountNumber ?? DEFAULT_ACCOUNT_NUMBER,
       bankName: settings?.paymentDetails?.bankName ?? DEFAULT_BANK_NAME,
       instructions: settings?.paymentDetails?.instructions ?? DEFAULT_PAYMENT_INSTRUCTIONS,
-      pinPurchaseEnabled: settings?.paymentDetails?.pinPurchaseEnabled ?? true,
-      qrCodePath: settings?.paymentDetails?.qrCodePath ?? null,
     },
     referralRules: {
       level1Percent:
@@ -1298,7 +1199,6 @@ async function serializeUser(user: User, req: express.Request | null = null) {
     referralLink: referralLinkEnabled ? getReferralLink(req, user.referralCode) : null,
     accountType: user.accountType,
     walletBalance: await getWalletBalance(user.id),
-    available_pins: await getAvailablePinCount(user.id),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt,
@@ -1625,8 +1525,6 @@ async function connectToMongoDB() {
         rewardClaims: mongoDb.collection('rewardClaims'),
         withdrawalRequests: mongoDb.collection('withdrawalRequests'),
         feedbacks: mongoDb.collection('feedbacks'),
-        pinPurchaseRequests: mongoDb.collection('pinPurchaseRequests'),
-        pins: mongoDb.collection('pins'),
       };
 
       console.log('Connected to MongoDB Atlas successfully 🚀');
@@ -1697,8 +1595,6 @@ async function initializeDatabase() {
       accountNumber: DEFAULT_ACCOUNT_NUMBER,
       bankName: DEFAULT_BANK_NAME,
       instructions: DEFAULT_PAYMENT_INSTRUCTIONS,
-      pinPurchaseEnabled: true,
-      qrCodePath: null,
     },
   });
 
@@ -1852,8 +1748,6 @@ async function syncBusinessModel() {
       instructions: shouldApplyDefaultPaymentInstructions
         ? DEFAULT_PAYMENT_INSTRUCTIONS
         : currentSettings?.paymentDetails?.instructions,
-      pinPurchaseEnabled: currentSettings?.paymentDetails?.pinPurchaseEnabled ?? true,
-      qrCodePath: currentSettings?.paymentDetails?.qrCodePath ?? null,
     },
   });
   await collections.settings.updateOne({}, { $set: nextSettings }, { upsert: true });
@@ -2022,240 +1916,6 @@ app.get("/api/auth/me", authenticate, async (req: AuthenticatedRequest, res) => 
   }
 
   return res.json({ user: await serializeUser(user, req) });
-});
-
-app.get("/api/pins/config/", authenticate, async (req: AuthenticatedRequest, res) => {
-  const settings = await getPublicSettings();
-  return res.json(serializePinPaymentSettings(settings, req));
-});
-
-app.get("/api/pins/requests/", authenticate, async (req: AuthenticatedRequest, res) => {
-  const requests = (await collections.pinPurchaseRequests
-    .find({ userId: req.authUser!.id })
-    .sort({ requestedAt: -1 })
-    .toArray()) as unknown as PinPurchaseRequest[];
-
-  return res.json(requests.map((request) => serializePinPurchaseRequest(request, req)));
-});
-
-app.post("/api/pins/requests/", authenticate, async (req: AuthenticatedRequestWithOptionalFile, res) => {
-  try {
-    await runPaymentProofUpload(req, res);
-  } catch (error) {
-    return respondToUploadError(res, error);
-  }
-
-  const settings = await getPublicSettings();
-  if (!settings.paymentDetails.pinPurchaseEnabled) {
-    return res.status(403).json({ message: PIN_PURCHASE_DISABLED_MESSAGE });
-  }
-
-  const quantity = Number(req.body.quantity);
-  if (!Number.isInteger(quantity) || quantity < MIN_PIN_PURCHASE_QUANTITY || quantity > MAX_PIN_PURCHASE_QUANTITY) {
-    return res.status(400).json({
-      message: `PIN quantity must be between ${MIN_PIN_PURCHASE_QUANTITY} and ${MAX_PIN_PURCHASE_QUANTITY}.`,
-    });
-  }
-
-  const trxId = String(req.body.trx_id ?? req.body.trxId ?? "").trim();
-  if (!trxId) {
-    return res.status(400).json({ message: "Transaction ID is required." });
-  }
-
-  if (!req.file) {
-    return res.status(400).json({ message: "Payment screenshot is required." });
-  }
-
-  const proofDetails = buildStoredProofDetails(req.file);
-  const requestRecord: PinPurchaseRequest = {
-    id: generateId("PINREQ"),
-    userId: req.authUser!.id,
-    accountNumber: String(req.body.account_number ?? req.body.accountNumber ?? "").trim(),
-    trxId,
-    amount: quantity * PIN_PRICE,
-    quantity,
-    status: "pending",
-    screenshotPath: proofDetails.proofFilePath!,
-    screenshotOriginalFileName: proofDetails.proofOriginalFileName,
-    screenshotMimeType: proofDetails.proofMimeType,
-    generatedPins: [],
-    requestedAt: nowIso(),
-    processedAt: null,
-    reviewedByUserId: null,
-  };
-
-  await collections.pinPurchaseRequests.insertOne(requestRecord);
-  await addNotification(
-    req.authUser!.id,
-    "payment",
-    "PIN purchase request submitted",
-    `Your request for ${quantity} PIN(s) is pending admin approval.`,
-  );
-
-  return res.status(201).json(serializePinPurchaseRequest(requestRecord, req));
-});
-
-app.get("/api/pins/me/", authenticate, async (req: AuthenticatedRequest, res) => {
-  const pins = (await collections.pins
-    .find({ userId: req.authUser!.id })
-    .sort({ purchasedAt: -1 })
-    .toArray()) as unknown as PinToken[];
-
-  return res.json(
-    pins.map((pin) => ({
-      id: pin.id,
-      token: pin.token,
-      status: pin.status,
-      purchasedAt: pin.purchasedAt,
-      amount: pin.amount,
-      requestId: pin.requestId,
-      usedBy: pin.usedBy,
-    })),
-  );
-});
-
-app.get("/api/pins/admin/settings/", authenticate, requireAdmin, async (req: AuthenticatedRequest, res) => {
-  const settings = await getPublicSettings();
-  return res.json(serializePinPaymentSettings(settings, req));
-});
-
-app.post(
-  "/api/pins/admin/settings/",
-  authenticate,
-  requireAdmin,
-  async (req: AuthenticatedRequestWithOptionalFile, res) => {
-    try {
-      await runPaymentProofUpload(req, res);
-    } catch (error) {
-      return respondToUploadError(res, error);
-    }
-
-    const body = parseSchema(pinSettingsSchema, req.body, res);
-    if (!body) {
-      return;
-    }
-
-    const currentSettings = await getPublicSettings();
-    const proofDetails = req.file ? buildStoredProofDetails(req.file) : null;
-    const paymentDetails = {
-      ...currentSettings.paymentDetails,
-      accountName: body.accountTitle,
-      accountNumber: body.accountNumber,
-      bankName: body.paymentMethod === "EasyPaisa" ? "Easypaisa" : body.paymentMethod,
-      instructions: body.instructions,
-      pinPurchaseEnabled: body.purchaseEnabled,
-      qrCodePath: proofDetails?.proofFilePath ?? currentSettings.paymentDetails.qrCodePath,
-    };
-
-    await collections.settings.updateOne(
-      {},
-      {
-        $set: normalizeSettings({
-          ...currentSettings,
-          paymentDetails,
-        }),
-      },
-      { upsert: true },
-    );
-
-    await addAuditLog(
-      { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
-      "PIN_PURCHASE_SETTINGS_UPDATED",
-      "settings",
-      "pin-purchase",
-      {
-        purchaseEnabled: paymentDetails.pinPurchaseEnabled,
-        paymentMethod: paymentDetails.bankName,
-      },
-    );
-
-    return res.json(serializePinPaymentSettings(await getPublicSettings(), req));
-  },
-);
-
-app.get("/api/pins/admin/requests/", authenticate, requireAdmin, async (req: AuthenticatedRequest, res) => {
-  const requests = (await collections.pinPurchaseRequests
-    .find({})
-    .sort({ requestedAt: -1 })
-    .toArray()) as unknown as PinPurchaseRequest[];
-
-  const rows = await Promise.all(
-    requests.map(async (request) => serializePinPurchaseRequest(request, req, await getUserById(request.userId))),
-  );
-
-  return res.json(rows);
-});
-
-app.post("/api/pins/admin/requests/:id/", authenticate, requireAdmin, async (req: AuthenticatedRequest, res) => {
-  const action = String(req.body.action ?? "");
-  if (action !== "approved" && action !== "rejected") {
-    return res.status(400).json({ message: "Action must be approved or rejected." });
-  }
-
-  const requestRecord = (await collections.pinPurchaseRequests.findOne({
-    id: String(req.params.id),
-  })) as unknown as PinPurchaseRequest | null;
-
-  if (!requestRecord) {
-    return res.status(404).json({ message: "PIN request not found." });
-  }
-  if (requestRecord.status !== "pending") {
-    return res.status(400).json({ message: "Only pending PIN requests can be updated." });
-  }
-
-  let generatedPins: string[] = [];
-  if (action === "approved") {
-    const pinRecords: PinToken[] = [];
-    const seen = new Set<string>();
-    while (pinRecords.length < requestRecord.quantity) {
-      const token = generatePinToken();
-      if (seen.has(token) || (await collections.pins.findOne({ token }))) {
-        continue;
-      }
-      seen.add(token);
-      pinRecords.push({
-        id: generateId("PIN"),
-        userId: requestRecord.userId,
-        requestId: requestRecord.id,
-        token,
-        amount: PIN_PRICE,
-        status: "available",
-        purchasedAt: nowIso(),
-        usedAt: null,
-        usedBy: null,
-      });
-    }
-    generatedPins = pinRecords.map((pin) => pin.token);
-    if (pinRecords.length > 0) {
-      await collections.pins.insertMany(pinRecords);
-    }
-  }
-
-  await collections.pinPurchaseRequests.updateOne(
-    { id: requestRecord.id },
-    {
-      $set: {
-        status: action,
-        processedAt: nowIso(),
-        reviewedByUserId: req.authUser!.id,
-        generatedPins,
-      },
-    },
-  );
-
-  await addNotification(
-    requestRecord.userId,
-    "payment",
-    action === "approved" ? "PIN purchase approved" : "PIN purchase rejected",
-    action === "approved"
-      ? `${requestRecord.quantity} PIN(s) have been added to your account.`
-      : "Your PIN purchase request was rejected.",
-  );
-
-  const updatedRequest = (await collections.pinPurchaseRequests.findOne({
-    id: requestRecord.id,
-  })) as unknown as PinPurchaseRequest;
-  return res.json(serializePinPurchaseRequest(updatedRequest, req, await getUserById(updatedRequest.userId)));
 });
 
 app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, res) => {
@@ -3820,8 +3480,6 @@ app.put("/api/admin/settings", authenticate, requireAdmin, async (req: Authentic
           accountNumber: body.paymentDetails.accountNumber,
           bankName: body.paymentDetails.bankName,
           instructions: body.paymentDetails.instructions,
-          pinPurchaseEnabled: body.paymentDetails.pinPurchaseEnabled ?? true,
-          qrCodePath: body.paymentDetails.qrCodePath ?? null,
         },
         referralRules: {
           level1Percent: body.referralRules.level1Percent,
