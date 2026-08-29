@@ -13,13 +13,12 @@ import helmetImport from "helmet";
 import jwt from "jsonwebtoken";
 import multer from "multer";
 import morgan from "morgan";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { MongoClient, Db, Collection } from "mongodb";
 import {
   DEFAULT_INVESTMENT_PLANS,
-  DEFAULT_REFERRAL_POINT_RULES,
+  DEFAULT_REFERRAL_RISE_COINS_RULES,
   DEFAULT_REFERRAL_RULES,
   DEFAULT_REFERRAL_TIERS,
   DEFAULT_REWARD_MILESTONES,
@@ -39,21 +38,19 @@ const DB_VERSION = 2;
 const MONGODB_URI = process.env.MONGODB_URI?.trim().replace(/^['"]|['"]$/g, "");
 console.log("[startup] MONGODB_URI present:", Boolean(MONGODB_URI));
 const JWT_SECRET = createHash("sha256")
-  .update(`${MONGODB_URI ?? "missing-mongodb-uri"}::nexo-women-jwt-secret`)
+  .update(`${MONGODB_URI ?? "missing-mongodb-uri"}::nexorise-jwt-secret`)
   .digest("hex");
-const DEFAULT_ADMIN_NAME = "Nexo Platform Admin";
-const DEFAULT_ADMIN_EMAIL = "admin@nexo.com";
+const DEFAULT_ADMIN_NAME = "NexoRise Platform Admin";
+const DEFAULT_ADMIN_EMAIL = "admin@nexorise.com";
 const DEFAULT_ADMIN_PHONE = "+92 300 0000000";
-const DEFAULT_SUPPORT_EMAIL = "support@nexo.com";
+const DEFAULT_SUPPORT_EMAIL = "support@nexorise.com";
 const DEFAULT_SUPPORT_PHONE_1 = "03448252109";
 const DEFAULT_SUPPORT_PHONE_2 = "03057410110";
 const DEFAULT_SUPPORT_LOCATION = "Sargodha";
 const DEFAULT_ADMIN_PASSWORD = "admin123";
-const DEFAULT_PLATFORM_NAME = "Nexo Women Earning System";
-const LEGACY_DEFAULT_ACCOUNT_NAME = "Default Account";
-const LEGACY_DEFAULT_ACCOUNT_NUMBER = "0000000000";
-const LEGACY_DEFAULT_BANK_NAME = "Default Bank";
-const LEGACY_DEFAULT_PAYMENT_INSTRUCTIONS = "Default payment instructions";
+const DEFAULT_PLATFORM_NAME = "NexoRise";
+const DEFAULT_ADMIN_WHATSAPP = "03057410110";
+const DEFAULT_USD_EXCHANGE_RATE = 280;
 const DEFAULT_ACCOUNT_NAME = "Sardar Laeiq Ahmed";
 const DEFAULT_ACCOUNT_NUMBER = "03448252109";
 const DEFAULT_BANK_NAME = "EasyPaisa";
@@ -64,14 +61,10 @@ const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
 const DEFAULT_DRAW_DAYS = 30;
 const DEFAULT_ANNOUNCEMENT_TITLE = "Join, Build Your Team & Start Earning";
 const DEFAULT_ANNOUNCEMENT_MESSAGE =
-  "Choose from 500 to 15000 PKR plans, earn 3-step referral income, unlock rewards up to 35,000 PKR, and withdraw from 500 PKR with 10% tax in 24-48 hours.";
+  "Choose from 800 to 10000 PKR plans, earn 3-step referral income, unlock rewards up to 35,000 PKR, and withdraw from 500 PKR with 10% tax in 24-48 hours.";
+const TRAINING_WHATSAPP_CHANNEL_URL =
+  "https://whatsapp.com/channel/0029VbClmg56LwHqK2IXYy1Y?utm_source=chatgpt.com";
 const IS_VERCEL = Boolean(process.env.VERCEL);
-
-// MongoDB setup - removed JSON database variables
-const UPLOADS_DIR = IS_VERCEL
-  ? path.join("/tmp", "nexo-uploads")
-  : path.resolve(process.cwd(), "uploads");
-const PAYMENT_PROOF_DIR = path.join(UPLOADS_DIR, "payment-proofs");
 
 // MongoDB setup
 let mongoClient: MongoClient;
@@ -92,6 +85,9 @@ let collections: {
   rewardClaims: Collection;
   withdrawalRequests: Collection;
   feedbacks: Collection;
+  accountCreationRequests: Collection;
+  activityFeed: Collection;
+  trainingSeatConfirmations: Collection;
 };
 let mongoConnectPromise: Promise<void> | null = null;
 let backendDatabaseReady = false;
@@ -125,7 +121,7 @@ type WalletTransactionType =
   | "lucky_draw_commission"
   | "winner_reward"
   | "referral_commission"
-  | "points_reward"
+  | "rise_coins_reward"
   | "withdrawal";
 
 type NotificationType = "system" | "payment" | "commission" | "reward" | "withdrawal";
@@ -133,7 +129,13 @@ type NotificationType = "system" | "payment" | "commission" | "reward" | "withdr
 type DrawStatus = "open" | "completed";
 
 type WithdrawalRequestStatus = "pending" | "approved" | "rejected";
-type WithdrawalAccountType = "easypaisa" | "jazzcash" | "bank_transfer";
+type WithdrawalAccountType = "easypaisa" | "jazzcash" | "bank_transfer" | "binance";
+
+type PaymentMethodType = "easypaisa" | "jazzcash" | "bank" | "binance";
+
+type AccountRequestStatus = "pending" | "approved" | "rejected";
+
+type ActivityFeedType = "signup" | "withdrawal";
 
 type User = {
   id: string;
@@ -156,7 +158,7 @@ type Plan = {
   id: string;
   name: string;
   price: number;
-  points: number;
+  riseCoins: number;
   level1Percent: number;
   level2Percent: number;
   level3Percent: number;
@@ -191,7 +193,7 @@ type PaymentSubmission = {
   referenceId: string;
   manualTransactionId: string;
   proofNote: string;
-  proofFilePath: string | null;
+  proofBase64: string | null;
   proofOriginalFileName: string | null;
   proofMimeType: string | null;
   status: PaymentStatus;
@@ -247,7 +249,7 @@ type WalletTransaction = {
 };
 
 type RewardMilestone = {
-  pointsRequired: number;
+  riseCoinsRequired: number;
   rewardAmount: number;
   title: string;
 };
@@ -255,7 +257,7 @@ type RewardMilestone = {
 type RewardClaim = {
   id: string;
   userId: string;
-  pointsRequired: number;
+  riseCoinsRequired: number;
   rewardAmount: number;
   walletTransactionId: string;
   claimedAt: string;
@@ -318,6 +320,16 @@ type AuditLog = {
   createdAt: string;
 };
 
+type PaymentMethod = {
+  id: string;
+  type: PaymentMethodType;
+  label: string;
+  accountNumber: string;
+  accountHolderName: string;
+  extraInstructions: string;
+  active: boolean;
+};
+
 type Settings = {
   platformName: string;
   supportEmail: string;
@@ -329,18 +341,15 @@ type Settings = {
   };
   enableRegistrations: boolean;
   maintenanceMode: boolean;
-  paymentDetails: {
-    accountName: string;
-    accountNumber: string;
-    bankName: string;
-    instructions: string;
-  };
+  paymentMethods: PaymentMethod[];
+  adminWhatsApp: string;
+  usdExchangeRate: number;
   referralRules: {
     level1Percent: number;
     level2Percent: number;
     level3Percent: number;
   };
-  referralPointRules: {
+  referralRiseCoinsRules: {
     level1Percent: number;
     level2Percent: number;
     level3Percent: number;
@@ -354,6 +363,49 @@ type Settings = {
     processingHoursMin: number;
     processingHoursMax: number;
   };
+};
+
+type AccountCreationRequest = {
+  id: string;
+  requestedByUserId: string;
+  requestedByName: string;
+  requestedByEmail: string;
+  newMemberName: string;
+  newMemberEmail: string;
+  newMemberMobile: string;
+  planId: string;
+  planAmount: number;
+  referralCode: string | null;
+  resolvedReferrerUserId: string | null;
+  paymentNumber: string;
+  paymentMethodType: PaymentMethodType;
+  paymentScreenshotBase64: string;
+  paymentScreenshotMimeType: string;
+  status: AccountRequestStatus;
+  reviewNote: string;
+  createdAt: string;
+  reviewedAt: string | null;
+  reviewedByUserId: string | null;
+};
+
+type ActivityFeedEntry = {
+  id: string;
+  type: ActivityFeedType;
+  name: string;
+  planAmount?: number;
+  method?: string;
+  amount?: number;
+  createdAt: string;
+};
+
+type TrainingSeatConfirmation = {
+  id: string;
+  userId: string;
+  name: string;
+  age: number;
+  qualification: string;
+  agreed: true;
+  createdAt: string;
 };
 
 type AuthPayload = {
@@ -443,25 +495,10 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(morgan("combined"));
 app.use(express.static(path.resolve(process.cwd(), "public")));
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    if (!existsSync(UPLOADS_DIR)) {
-      mkdirSync(UPLOADS_DIR, { recursive: true });
-    }
-    if (!existsSync(PAYMENT_PROOF_DIR)) {
-      mkdirSync(PAYMENT_PROOF_DIR, { recursive: true });
-    }
-    cb(null, PAYMENT_PROOF_DIR);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = randomBytes(8).toString("hex");
-    const ext = path.extname(file.originalname);
-    cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`);
-  },
-});
-
+// Payment proof / screenshot files are stored as base64 directly in MongoDB (not on disk),
+// since Vercel's ephemeral /tmp filesystem loses files on cold start/redeploy.
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: {
     fileSize: MAX_PROOF_FILE_SIZE_BYTES,
   },
@@ -475,14 +512,6 @@ const upload = multer({
 });
 
 // Zod schemas
-const registerSchema = z.object({
-  name: z.string().trim().min(3),
-  email: z.string().trim().email(),
-  phone: z.string().trim().min(10),
-  password: z.string().min(6),
-  referralCode: z.string().trim().optional(),
-});
-
 const loginSchema = z.object({
   email: z.string().trim().email(),
   password: z.string().min(6),
@@ -516,12 +545,12 @@ const winnerSelectionSchema = z.object({
 });
 
 const rewardClaimSchema = z.object({
-  pointsRequired: z.number().positive(),
+  riseCoinsRequired: z.number().positive(),
 });
 
 const withdrawalRequestSchema = z.object({
   amount: z.number().positive(),
-  accountType: z.enum(["easypaisa", "jazzcash", "bank_transfer"]),
+  accountType: z.enum(["easypaisa", "jazzcash", "bank_transfer", "binance"]),
   accountDetails: z.string().trim().min(3).max(120),
   note: z.string().trim().optional(),
 });
@@ -542,24 +571,31 @@ const settingsSchema = z.object({
   }),
   enableRegistrations: z.boolean(),
   maintenanceMode: z.boolean(),
-  paymentDetails: z.object({
-    accountName: z.string().trim().min(1),
-    accountNumber: z.string().trim().min(1),
-    bankName: z.string().trim().min(1),
-    instructions: z.string().trim().min(1),
-  }),
+  paymentMethods: z.array(
+    z.object({
+      id: z.string().trim().min(1).optional(),
+      type: z.enum(["easypaisa", "jazzcash", "bank", "binance"]),
+      label: z.string().trim().min(1),
+      accountNumber: z.string().trim().min(1),
+      accountHolderName: z.string().trim().min(1),
+      extraInstructions: z.string().trim().optional().default(""),
+      active: z.boolean().optional().default(true),
+    }),
+  ),
+  adminWhatsApp: z.string().trim().min(3),
+  usdExchangeRate: z.number().positive(),
   referralRules: z.object({
     level1Percent: z.number().min(0).max(100),
     level2Percent: z.number().min(0).max(100),
     level3Percent: z.number().min(0).max(100),
   }),
-  referralPointRules: z.object({
+  referralRiseCoinsRules: z.object({
     level1Percent: z.number().min(0).max(100),
     level2Percent: z.number().min(0).max(100),
     level3Percent: z.number().min(0).max(100),
   }),
   rewardMilestones: z.array(z.object({
-    pointsRequired: z.number().positive(),
+    riseCoinsRequired: z.number().positive(),
     rewardAmount: z.number().min(0),
     title: z.string().trim().min(1),
   })).length(DEFAULT_REWARD_MILESTONES.length),
@@ -580,7 +616,7 @@ const settingsSchema = z.object({
 const adminPlanSchema = z.object({
   name: z.string().trim().min(1),
   price: z.number().positive(),
-  points: z.number().int().positive(),
+  riseCoins: z.number().int().positive(),
   level1Percent: z.number().min(0).max(100),
   level2Percent: z.number().min(0).max(100),
   level3Percent: z.number().min(0).max(100),
@@ -597,6 +633,31 @@ const profileSchema = z.object({
 const feedbackSchema = z.object({
   name: z.string().trim().min(2).max(100),
   message: z.string().trim().min(5).max(5000),
+});
+
+const accountRequestSchema = z.object({
+  newMemberName: z.string().trim().min(3),
+  newMemberEmail: z.string().trim().email(),
+  newMemberMobile: z.string().trim().min(10),
+  planId: z.string().trim().min(1),
+  referralCode: z.string().trim().optional(),
+  paymentNumber: z.string().trim().min(3),
+  paymentMethodType: z.enum(["easypaisa", "jazzcash", "bank", "binance"]),
+});
+
+const accountRequestDecisionSchema = z.object({
+  status: z.enum(["approved", "rejected"]),
+  reviewNote: z.string().trim().optional(),
+});
+
+const trainingSeatConfirmationSchema = z.object({
+  name: z.string().trim().min(2),
+  age: z.number().int().positive(),
+  qualification: z.string().trim().min(1),
+});
+
+const resetForLaunchSchema = z.object({
+  confirmPassword: z.string().min(1),
 });
 
 // Helper functions
@@ -626,55 +687,27 @@ function generateTicketId() {
   return result;
 }
 
-function getDefaultPlanBenefits(price: number, points: number) {
-  const planBenefitsByPrice: Record<number, string[]> = {
-    1000: [
-      `${points} reward points on approval`,
-      "No Courses",
-      "Eligible for 3-step referral income",
-    ],
-    2000: [
-      `${points} reward points on approval`,
-      "No Courses",
-      "Eligible for 3-step referral income",
-    ],
-    4000: [
-      `${points} reward points on approval`,
-      "5 Courses (2 Mandatory + 3 Choice)",
-      "Eligible for 3-step referral income",
-    ],
-    6500: [
-      `${points} reward points on approval`,
-      "10 Courses (2 Mandatory + 8 Choice)",
-      "Eligible for 3-step referral income",
-    ],
-    9500: [
-      `${points} reward points on approval`,
-      "15 Courses (3 Mandatory + 12 Choice)",
-      "Eligible for 3-step referral income",
-    ],
-    12000: [
-      `${points} reward points on approval`,
-      "25 Courses (3 Mandatory + 22 Choice)",
-      "Eligible for 3-step referral income",
-    ],
-    15000: [
-      `${points} reward points on approval`,
-      "35+ Courses (All Access)",
-      "Eligible for 3-step referral income",
-    ],
-  };
+const NEXORISE_PLAN_PRICE_TIERS = [800, 1200, 1800, 2500, 3500, 4500, 5500, 7000, 8500, 10000];
 
-  return planBenefitsByPrice[price] ?? [
-    `${points} reward points on approval`,
+function getDefaultPlanBenefits(price: number, riseCoins: number) {
+  const baseBenefits = [
+    `${riseCoins} Rise Coins on approval`,
     "Eligible for 3-level referral income",
     "Counts toward rank rewards",
   ];
+
+  if (price >= 7000) {
+    return [...baseBenefits, "Priority support and faster withdrawal review"];
+  }
+  if (price >= 2500) {
+    return [...baseBenefits, "Access to team growth tools"];
+  }
+  return baseBenefits;
 }
 
-function normalizePlanBenefits(benefits: string[] | undefined, points: number, price = 0) {
-  if ([1000, 2000, 4000, 6500, 9500, 12000, 15000].includes(price)) {
-    return getDefaultPlanBenefits(price, points);
+function normalizePlanBenefits(benefits: string[] | undefined, riseCoins: number, price = 0) {
+  if (NEXORISE_PLAN_PRICE_TIERS.includes(price)) {
+    return getDefaultPlanBenefits(price, riseCoins);
   }
 
   const uniqueBenefits = Array.from(
@@ -685,7 +718,7 @@ function normalizePlanBenefits(benefits: string[] | undefined, points: number, p
     ),
   );
 
-  return uniqueBenefits.length > 0 ? uniqueBenefits : getDefaultPlanBenefits(price, points);
+  return uniqueBenefits.length > 0 ? uniqueBenefits : getDefaultPlanBenefits(price, riseCoins);
 }
 
 function roundCurrency(amount: number) {
@@ -728,15 +761,9 @@ function getRequestAppBaseUrl(req: express.Request) {
   return getRequestOrigin(req);
 }
 
-function getPublicFileUrl(req: express.Request | null, filePath: string | null) {
-  if (!filePath) return null;
-
-  const relativePath = `/api/files/${path.basename(filePath)}`;
-  if (!req) {
-    return relativePath;
-  }
-
-  return `${getRequestOrigin(req)}${relativePath}`;
+function buildDataUri(base64: string | null, mimeType: string | null) {
+  if (!base64 || !mimeType) return null;
+  return `data:${mimeType};base64,${base64}`;
 }
 
 function getReferralLink(req: express.Request | null, referralCode: string) {
@@ -789,21 +816,14 @@ function respondToUploadError(res: express.Response, error: unknown) {
 function buildStoredProofDetails(file?: Express.Multer.File) {
   if (!file) {
     return {
-      proofFilePath: null,
+      proofBase64: null,
       proofOriginalFileName: null,
       proofMimeType: null,
     };
   }
 
-  const timestamp = nowIso().replace(/[:.]/g, "-");
-  const ext = path.extname(file.originalname);
-  const newFileName = `proof-${timestamp}-${file.originalname}`;
-  const newFilePath = path.join(PAYMENT_PROOF_DIR, newFileName);
-
-  renameSync(file.path, newFilePath);
-
   return {
-    proofFilePath: newFilePath,
+    proofBase64: file.buffer.toString("base64"),
     proofOriginalFileName: file.originalname,
     proofMimeType: file.mimetype,
   };
@@ -811,11 +831,11 @@ function buildStoredProofDetails(file?: Express.Multer.File) {
 
 function serializePaymentSubmission(
   payment: PaymentSubmission,
-  req: express.Request | null = null,
+  _req: express.Request | null = null,
 ) {
   return {
     ...payment,
-    proofFileUrl: getPublicFileUrl(req, payment.proofFilePath),
+    proofFileUrl: buildDataUri(payment.proofBase64, payment.proofMimeType),
   };
 }
 
@@ -847,6 +867,64 @@ async function getActiveDraw(): Promise<LuckyDraw | null> {
   return draw as unknown as LuckyDraw | null;
 }
 
+const DEFAULT_PAYMENT_METHODS: PaymentMethod[] = [
+  {
+    id: "PM-EASYPAISA",
+    type: "easypaisa",
+    label: "EasyPaisa",
+    accountNumber: DEFAULT_ACCOUNT_NUMBER,
+    accountHolderName: DEFAULT_ACCOUNT_NAME,
+    extraInstructions: DEFAULT_PAYMENT_INSTRUCTIONS,
+    active: true,
+  },
+  {
+    id: "PM-JAZZCASH",
+    type: "jazzcash",
+    label: "JazzCash",
+    accountNumber: "",
+    accountHolderName: "",
+    extraInstructions: "",
+    active: false,
+  },
+  {
+    id: "PM-BANK",
+    type: "bank",
+    label: "Bank Transfer",
+    accountNumber: "",
+    accountHolderName: "",
+    extraInstructions: "",
+    active: false,
+  },
+  {
+    id: "PM-BINANCE",
+    type: "binance",
+    label: "Binance",
+    accountNumber: "",
+    accountHolderName: "",
+    extraInstructions: "",
+    active: false,
+  },
+];
+
+function normalizePaymentMethods(paymentMethods?: unknown): PaymentMethod[] {
+  if (!Array.isArray(paymentMethods) || paymentMethods.length === 0) {
+    return DEFAULT_PAYMENT_METHODS.map((method) => ({ ...method }));
+  }
+
+  return paymentMethods.map((raw: any) => ({
+    id: typeof raw?.id === "string" && raw.id ? raw.id : generateId("PM"),
+    type:
+      raw?.type === "easypaisa" || raw?.type === "jazzcash" || raw?.type === "bank" || raw?.type === "binance"
+        ? raw.type
+        : "easypaisa",
+    label: typeof raw?.label === "string" ? raw.label : "",
+    accountNumber: typeof raw?.accountNumber === "string" ? raw.accountNumber : "",
+    accountHolderName: typeof raw?.accountHolderName === "string" ? raw.accountHolderName : "",
+    extraInstructions: typeof raw?.extraInstructions === "string" ? raw.extraInstructions : "",
+    active: raw?.active !== false,
+  }));
+}
+
 function normalizeSettings(settings?: Partial<Settings> | null): Settings {
   return {
     platformName: settings?.platformName ?? DEFAULT_PLATFORM_NAME,
@@ -859,12 +937,12 @@ function normalizeSettings(settings?: Partial<Settings> | null): Settings {
     },
     enableRegistrations: settings?.enableRegistrations ?? true,
     maintenanceMode: settings?.maintenanceMode ?? false,
-    paymentDetails: {
-      accountName: settings?.paymentDetails?.accountName ?? DEFAULT_ACCOUNT_NAME,
-      accountNumber: settings?.paymentDetails?.accountNumber ?? DEFAULT_ACCOUNT_NUMBER,
-      bankName: settings?.paymentDetails?.bankName ?? DEFAULT_BANK_NAME,
-      instructions: settings?.paymentDetails?.instructions ?? DEFAULT_PAYMENT_INSTRUCTIONS,
-    },
+    paymentMethods: normalizePaymentMethods(settings?.paymentMethods),
+    adminWhatsApp: settings?.adminWhatsApp ?? DEFAULT_ADMIN_WHATSAPP,
+    usdExchangeRate:
+      typeof settings?.usdExchangeRate === "number" && settings.usdExchangeRate > 0
+        ? settings.usdExchangeRate
+        : DEFAULT_USD_EXCHANGE_RATE,
     referralRules: {
       level1Percent:
         settings?.referralRules?.level1Percent ?? DEFAULT_REFERRAL_RULES.level1Percent,
@@ -873,26 +951,26 @@ function normalizeSettings(settings?: Partial<Settings> | null): Settings {
       level3Percent:
         settings?.referralRules?.level3Percent ?? DEFAULT_REFERRAL_RULES.level3Percent,
     },
-    referralPointRules: {
+    referralRiseCoinsRules: {
       level1Percent:
-        settings?.referralPointRules?.level1Percent ??
-        DEFAULT_REFERRAL_POINT_RULES.level1Percent,
+        settings?.referralRiseCoinsRules?.level1Percent ??
+        DEFAULT_REFERRAL_RISE_COINS_RULES.level1Percent,
       level2Percent:
-        settings?.referralPointRules?.level2Percent ??
-        DEFAULT_REFERRAL_POINT_RULES.level2Percent,
+        settings?.referralRiseCoinsRules?.level2Percent ??
+        DEFAULT_REFERRAL_RISE_COINS_RULES.level2Percent,
       level3Percent:
-        settings?.referralPointRules?.level3Percent ??
-        DEFAULT_REFERRAL_POINT_RULES.level3Percent,
+        settings?.referralRiseCoinsRules?.level3Percent ??
+        DEFAULT_REFERRAL_RISE_COINS_RULES.level3Percent,
     },
     rewardMilestones:
       settings?.rewardMilestones?.length === DEFAULT_REWARD_MILESTONES.length
         ? settings.rewardMilestones
             .map((milestone) => ({
-              pointsRequired: Number(milestone.pointsRequired),
+              riseCoinsRequired: Number(milestone.riseCoinsRequired),
               rewardAmount: Number(milestone.rewardAmount),
               title: milestone.title,
             }))
-            .sort((left, right) => left.pointsRequired - right.pointsRequired)
+            .sort((left, right) => left.riseCoinsRequired - right.riseCoinsRequired)
         : DEFAULT_REWARD_MILESTONES.map((milestone) => ({ ...milestone })),
     withdrawalRules: {
       minimumAmount:
@@ -922,7 +1000,7 @@ function normalizePlan(plan: any): Plan {
     id: String(plan.id),
     name: String(plan.name),
     price: Number(plan.price),
-    points: Number(plan.points ?? 0),
+    riseCoins: Number(plan.riseCoins ?? 0),
     level1Percent: Number(
       typeof plan.level1Percent === "number"
         ? plan.level1Percent
@@ -970,7 +1048,7 @@ async function serializeAdminPlan(planInput: any) {
 
   return {
     ...plan,
-    benefits: normalizePlanBenefits(plan.benefits, plan.points, plan.price),
+    benefits: normalizePlanBenefits(plan.benefits, plan.riseCoins, plan.price),
     linkedInvestments,
     linkedPayments,
   };
@@ -992,10 +1070,10 @@ async function getUserInvestmentOrders(userId: string, status?: InvestmentStatus
   return (await collections.investmentOrders.find(query).sort({ createdAt: -1 }).toArray()) as unknown as InvestmentOrder[];
 }
 
-async function getUserPersonalPoints(userId: string) {
+async function getUserPersonalRiseCoins(userId: string) {
   const orders = await getUserInvestmentOrders(userId, "active");
   const plans = await Promise.all(orders.map((order) => getPlanById(order.planId)));
-  return plans.reduce((sum, plan) => sum + Number(plan?.points ?? 0), 0);
+  return plans.reduce((sum, plan) => sum + Number(plan?.riseCoins ?? 0), 0);
 }
 
 async function getReferralLevelUsers(userId: string) {
@@ -1029,65 +1107,65 @@ async function getReferralLevelUsers(userId: string) {
   };
 }
 
-async function getUserPointsSummary(userId: string) {
-  const [settings, allLevelUsers, personalPoints] = await Promise.all([
+async function getUserRiseCoinsSummary(userId: string) {
+  const [settings, allLevelUsers, personalRiseCoins] = await Promise.all([
     getPublicSettings(),
     getReferralLevelUsers(userId),
-    getUserPersonalPoints(userId),
+    getUserPersonalRiseCoins(userId),
   ]);
 
   const { level1Users, level2Users, level3Users } = allLevelUsers;
 
-  // Always get level 1 points (all levels can access 1st level)
-  const level1PointsList = await Promise.all(
-    level1Users.map((referral) => getUserPersonalPoints(referral.id))
+  // Always get level 1 riseCoins (all levels can access 1st level)
+  const level1RiseCoinsList = await Promise.all(
+    level1Users.map((referral) => getUserPersonalRiseCoins(referral.id))
   );
-  const level1PointsRaw = level1PointsList.reduce((sum, points) => sum + points, 0);
-  const level1Points = Math.floor(
-    (level1PointsRaw * settings.referralPointRules.level1Percent) / 100,
+  const level1RiseCoinsRaw = level1RiseCoinsList.reduce((sum, riseCoins) => sum + riseCoins, 0);
+  const level1RiseCoins = Math.floor(
+    (level1RiseCoinsRaw * settings.referralRiseCoinsRules.level1Percent) / 100,
   );
 
-  // Always get level 2 points (levels 1-2 can access up to 2 levels)
-  const level2PointsList = await Promise.all(
-    level2Users.map((referral) => getUserPersonalPoints(referral.id))
+  // Always get level 2 riseCoins (levels 1-2 can access up to 2 levels)
+  const level2RiseCoinsList = await Promise.all(
+    level2Users.map((referral) => getUserPersonalRiseCoins(referral.id))
   );
-  const level2PointsRaw = level2PointsList.reduce((sum, points) => sum + points, 0);
-  const level2Points = Math.floor(
-    (level2PointsRaw * settings.referralPointRules.level2Percent) / 100,
+  const level2RiseCoinsRaw = level2RiseCoinsList.reduce((sum, riseCoins) => sum + riseCoins, 0);
+  const level2RiseCoins = Math.floor(
+    (level2RiseCoinsRaw * settings.referralRiseCoinsRules.level2Percent) / 100,
   );
 
   // Preliminary total with 2 levels
-  const preliminaryTotal = personalPoints + level1Points + level2Points;
+  const preliminaryTotal = personalRiseCoins + level1RiseCoins + level2RiseCoins;
 
-  // Check if user qualifies for Level 3 (4000 points required)
-  let level3Points = 0;
+  // Check if user qualifies for Level 3 (4000 riseCoins required)
+  let level3RiseCoins = 0;
   if (preliminaryTotal >= 4000) {
-    const level3PointsList = await Promise.all(
-      level3Users.map((referral) => getUserPersonalPoints(referral.id))
+    const level3RiseCoinsList = await Promise.all(
+      level3Users.map((referral) => getUserPersonalRiseCoins(referral.id))
     );
-    const level3PointsRaw = level3PointsList.reduce((sum, points) => sum + points, 0);
-    level3Points = Math.floor(
-      (level3PointsRaw * settings.referralPointRules.level3Percent) / 100,
+    const level3RiseCoinsRaw = level3RiseCoinsList.reduce((sum, riseCoins) => sum + riseCoins, 0);
+    level3RiseCoins = Math.floor(
+      (level3RiseCoinsRaw * settings.referralRiseCoinsRules.level3Percent) / 100,
     );
   }
 
-  const referralPoints = level1Points + level2Points + level3Points;
+  const referralRiseCoins = level1RiseCoins + level2RiseCoins + level3RiseCoins;
 
   return {
-    personalPoints,
-    referralPoints,
-    totalPoints: personalPoints + referralPoints,
+    personalRiseCoins,
+    referralRiseCoins,
+    totalRiseCoins: personalRiseCoins + referralRiseCoins,
     referralBreakdown: {
-      level1Points,
-      level2Points,
-      level3Points,
+      level1RiseCoins,
+      level2RiseCoins,
+      level3RiseCoins,
     },
   };
 }
 
-async function getUserPoints(userId: string) {
-  const summary = await getUserPointsSummary(userId);
-  return summary.totalPoints;
+async function getUserRiseCoins(userId: string) {
+  const summary = await getUserRiseCoinsSummary(userId);
+  return summary.totalRiseCoins;
 }
 
 async function getUserActiveInvestmentValue(userId: string) {
@@ -1147,7 +1225,9 @@ async function getWalletTransactionsForUser(userId: string) {
 
 function normalizeWithdrawalRequest(raw: any): WithdrawalRequest {
   const accountType: WithdrawalAccountType =
-    raw?.accountType === "easypaisa" || raw?.accountType === "jazzcash"
+    raw?.accountType === "easypaisa" ||
+    raw?.accountType === "jazzcash" ||
+    raw?.accountType === "binance"
       ? raw.accountType
       : "bank_transfer";
 
@@ -1172,10 +1252,10 @@ function normalizeWithdrawalRequest(raw: any): WithdrawalRequest {
   };
 }
 
-function getReferralTierByPoints(totalPoints: number) {
+function getReferralTierByRiseCoins(totalRiseCoins: number) {
   let matched: (typeof DEFAULT_REFERRAL_TIERS)[number] = DEFAULT_REFERRAL_TIERS[0];
   for (const tier of DEFAULT_REFERRAL_TIERS) {
-    if (totalPoints >= tier.pointsRequired) {
+    if (totalRiseCoins >= tier.riseCoinsRequired) {
       matched = tier;
     }
   }
@@ -1216,6 +1296,16 @@ async function addNotification(userId: string, type: NotificationType, title: st
     createdAt: nowIso(),
   };
   await collections.notifications.insertOne(notification);
+}
+
+async function addActivityFeedEntry(entry: Omit<ActivityFeedEntry, "id" | "createdAt">) {
+  const activityFeedEntry: ActivityFeedEntry = {
+    id: generateId("ACT"),
+    createdAt: nowIso(),
+    ...entry,
+  };
+  await collections.activityFeed.insertOne(activityFeedEntry);
+  return activityFeedEntry;
 }
 
 async function addAuditLog(
@@ -1289,51 +1379,70 @@ async function addWalletDebit(
   });
 }
 
+async function buildReferralUserRow(referral: User) {
+  const [totalRiseCoins, activeInvestmentValue] = await Promise.all([
+    getUserPersonalRiseCoins(referral.id),
+    getUserActiveInvestmentValue(referral.id),
+  ]);
+  const tier = getReferralTierByRiseCoins(totalRiseCoins);
+
+  return {
+    id: referral.id,
+    name: referral.name,
+    email: referral.email,
+    accountType: referral.accountType,
+    joinedAt: referral.createdAt,
+    totalRiseCoins,
+    activeInvestmentValue,
+    rankTitle: tier.title,
+    status: activeInvestmentValue > 0 ? "active" : "inactive",
+  };
+}
+
 async function getReferralCounts(userId: string) {
   const { level1Users, level2Users, level3Users } = await getReferralLevelUsers(userId);
 
-  const directUsers = await Promise.all(
-    level1Users.map(async (referral) => ({
-      id: referral.id,
-      name: referral.name,
-      email: referral.email,
-      accountType: referral.accountType,
-      joinedAt: referral.createdAt,
-      totalPoints: await getUserPersonalPoints(referral.id),
-      activeInvestmentValue: await getUserActiveInvestmentValue(referral.id),
-    })),
-  );
+  const [directUsers, level2UserRows, level3UserRows] = await Promise.all([
+    Promise.all(level1Users.map((referral) => buildReferralUserRow(referral))),
+    Promise.all(level2Users.map((referral) => buildReferralUserRow(referral))),
+    Promise.all(level3Users.map((referral) => buildReferralUserRow(referral))),
+  ]);
 
   return {
     level1: level1Users.length,
     level2: level2Users.length,
     level3: level3Users.length,
     directUsers,
+    // Indirect team = level 2 + level 3. Exposed both split by level and combined
+    // so the frontend can offer a Direct/Indirect toggle (C14).
+    level2Users: level2UserRows,
+    level3Users: level3UserRows,
+    indirectUsers: [...level2UserRows, ...level3UserRows],
   };
 }
 
 async function getRewardMilestoneSummary(userId: string) {
   const settings = await getPublicSettings();
-  const [totalPoints, claims] = await Promise.all([
-    getUserPoints(userId),
+  const [totalRiseCoins, claims] = await Promise.all([
+    getUserRiseCoins(userId),
     getRewardClaimsForUser(userId),
   ]);
 
-  const claimedPoints = new Set(claims.map((claim) => claim.pointsRequired));
+  const claimedRiseCoins = new Set(claims.map((claim) => claim.riseCoinsRequired));
   const milestones = settings.rewardMilestones.map((milestone) => ({
     ...milestone,
-    claimed: claimedPoints.has(milestone.pointsRequired),
+    claimed: claimedRiseCoins.has(milestone.riseCoinsRequired),
     claimable:
       milestone.rewardAmount > 0 &&
-      totalPoints >= milestone.pointsRequired &&
-      !claimedPoints.has(milestone.pointsRequired),
-    remainingPoints: Math.max(milestone.pointsRequired - totalPoints, 0),
+      totalRiseCoins >= milestone.riseCoinsRequired &&
+      !claimedRiseCoins.has(milestone.riseCoinsRequired),
+    remainingRiseCoins: Math.max(milestone.riseCoinsRequired - totalRiseCoins, 0),
   }));
   const nextMilestone =
     milestones.find((milestone) => milestone.rewardAmount > 0 && !milestone.claimed) ?? null;
 
   return {
-    totalPoints,
+    totalRiseCoins,
     claims,
     milestones,
     nextMilestone,
@@ -1365,15 +1474,15 @@ async function getReferralUplines(user: User, maxLevels = 3) {
 async function distributeInvestmentCommissions(user: User, plan: Plan, paymentId: string) {
   // Determine max upline levels based on user's tier
   // Levels 1-2: 2 steps, Level 3+: 3 steps
-  const userPoints = await getUserPoints(user.id);
-  const userTier = getReferralTierByPoints(userPoints);
-  const maxLevels = userTier.pointsRequired >= 4000 ? 3 : 2; // Level 3 (Elevate) = 4000 points
+  const userRiseCoins = await getUserRiseCoins(user.id);
+  const userTier = getReferralTierByRiseCoins(userRiseCoins);
+  const maxLevels = userTier.riseCoinsRequired >= 4000 ? 3 : 2; // Level 3 (Elevate) = 4000 riseCoins
   
   const uplines = await getReferralUplines(user, maxLevels);
 
   for (const { level, user: sponsor } of uplines) {
-    const sponsorPoints = await getUserPoints(sponsor.id);
-    const sponsorTier = getReferralTierByPoints(sponsorPoints);
+    const sponsorRiseCoins = await getUserRiseCoins(sponsor.id);
+    const sponsorTier = getReferralTierByRiseCoins(sponsorRiseCoins);
     let percentage = 0;
     if (level === 1) {
       percentage = sponsorTier.directPercent;
@@ -1423,17 +1532,42 @@ async function recomputeUserAccountType(userId: string) {
   }
 }
 
+// Shared activation path used both by the admin payment-approval flow
+// (PUT /api/admin/payments/:id) and the account-creation-request approval flow
+// (PATCH /api/admin/account-requests/:id): marks the investment order active,
+// notifies the user, distributes referral Rise Coins/commissions, and recomputes
+// account type. Kept as one function so both callers stay behaviorally identical.
+async function activateInvestmentOrder(
+  user: User,
+  plan: Plan,
+  investmentOrderId: string,
+  referenceId: string,
+) {
+  await collections.investmentOrders.updateOne(
+    { id: investmentOrderId },
+    { $set: { status: "active", activatedAt: nowIso() } },
+  );
+  await addNotification(
+    user.id,
+    "payment",
+    "Investment approved",
+    `${plan.name} has been activated. You earned ${plan.riseCoins} Rise Coins toward your reward ranks.`,
+  );
+  await distributeInvestmentCommissions(user, plan, referenceId);
+  await recomputeUserAccountType(user.id);
+}
+
 function calculateInvestmentMetrics(order: InvestmentOrder, plan: Plan) {
   const isActive = order.status === "active";
   return {
     dailyEarning: 0,
     totalReturn: plan.price,
-    earned: isActive ? plan.points : 0,
+    earned: isActive ? plan.riseCoins : 0,
     remaining: 0,
     daysElapsed: isActive ? 1 : 0,
     durationDays: 1,
     progressPercent: isActive ? 100 : 0,
-    points: plan.points,
+    riseCoins: plan.riseCoins,
   };
 }
 
@@ -1478,6 +1612,18 @@ function runPaymentProofUpload(req: express.Request, res: express.Response) {
 
 function hasPaymentProof(proofNote?: string, file?: Express.Multer.File) {
   return (proofNote?.trim().length ?? 0) >= 3 || Boolean(file);
+}
+
+function runAccountRequestScreenshotUpload(req: express.Request, res: express.Response) {
+  return new Promise<void>((resolve, reject) => {
+    upload.single("paymentScreenshot")(req, res, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 // MongoDB connection
@@ -1525,6 +1671,9 @@ async function connectToMongoDB() {
         rewardClaims: mongoDb.collection('rewardClaims'),
         withdrawalRequests: mongoDb.collection('withdrawalRequests'),
         feedbacks: mongoDb.collection('feedbacks'),
+        accountCreationRequests: mongoDb.collection('accountCreationRequests'),
+        activityFeed: mongoDb.collection('activityFeed'),
+        trainingSeatConfirmations: mongoDb.collection('trainingSeatConfirmations'),
       };
 
       console.log('Connected to MongoDB Atlas successfully 🚀');
@@ -1588,14 +1737,11 @@ async function initializeDatabase() {
       email: DEFAULT_SUPPORT_EMAIL,
       location: DEFAULT_SUPPORT_LOCATION,
     },
-    enableRegistrations: true,
+    enableRegistrations: false,
     maintenanceMode: false,
-    paymentDetails: {
-      accountName: DEFAULT_ACCOUNT_NAME,
-      accountNumber: DEFAULT_ACCOUNT_NUMBER,
-      bankName: DEFAULT_BANK_NAME,
-      instructions: DEFAULT_PAYMENT_INSTRUCTIONS,
-    },
+    paymentMethods: DEFAULT_PAYMENT_METHODS,
+    adminWhatsApp: DEFAULT_ADMIN_WHATSAPP,
+    usdExchangeRate: DEFAULT_USD_EXCHANGE_RATE,
   });
 
   // Create default admin user
@@ -1665,7 +1811,7 @@ async function syncBusinessModel() {
         $set: {
           name: plan.name,
           price: plan.price,
-          points: plan.points,
+          riseCoins: plan.riseCoins,
           level1Percent:
             typeof existingPlan?.level1Percent === "number"
               ? existingPlan.level1Percent
@@ -1678,7 +1824,7 @@ async function syncBusinessModel() {
             typeof existingPlan?.level3Percent === "number"
               ? existingPlan.level3Percent
               : plan.level3Percent,
-          benefits: normalizePlanBenefits(plan.benefits, plan.points, plan.price),
+          benefits: normalizePlanBenefits(plan.benefits, plan.riseCoins, plan.price),
           featured: plan.featured,
           active: true,
           roiPercent: 0,
@@ -1708,21 +1854,32 @@ async function syncBusinessModel() {
     },
   );
 
-  const currentSettings = (await collections.settings.findOne({})) as Partial<Settings> | null;
+  const currentSettings = (await collections.settings.findOne({})) as
+    | (Partial<Settings> & { paymentDetails?: Record<string, string> })
+    | null;
   const shouldApplyDefaultPlatformName =
-    !currentSettings?.platformName || currentSettings.platformName === "Nexo Investment Platform";
-  const shouldApplyDefaultAccountName =
-    !currentSettings?.paymentDetails?.accountName ||
-    currentSettings.paymentDetails.accountName === LEGACY_DEFAULT_ACCOUNT_NAME;
-  const shouldApplyDefaultAccountNumber =
-    !currentSettings?.paymentDetails?.accountNumber ||
-    currentSettings.paymentDetails.accountNumber === LEGACY_DEFAULT_ACCOUNT_NUMBER;
-  const shouldApplyDefaultBankName =
-    !currentSettings?.paymentDetails?.bankName ||
-    currentSettings.paymentDetails.bankName === LEGACY_DEFAULT_BANK_NAME;
-  const shouldApplyDefaultPaymentInstructions =
-    !currentSettings?.paymentDetails?.instructions ||
-    currentSettings.paymentDetails.instructions === LEGACY_DEFAULT_PAYMENT_INSTRUCTIONS;
+    !currentSettings?.platformName ||
+    currentSettings.platformName === "Nexo Investment Platform" ||
+    currentSettings.platformName === "Nexo Women Earning System";
+
+  // One-time migration: legacy single `paymentDetails` object -> `paymentMethods` array.
+  const legacyPaymentDetails = currentSettings?.paymentDetails;
+  const migratedPaymentMethods =
+    !currentSettings?.paymentMethods && legacyPaymentDetails
+      ? [
+          {
+            id: "PM-EASYPAISA",
+            type: "easypaisa" as const,
+            label: legacyPaymentDetails.bankName ?? DEFAULT_BANK_NAME,
+            accountNumber: legacyPaymentDetails.accountNumber ?? DEFAULT_ACCOUNT_NUMBER,
+            accountHolderName: legacyPaymentDetails.accountName ?? DEFAULT_ACCOUNT_NAME,
+            extraInstructions: legacyPaymentDetails.instructions ?? DEFAULT_PAYMENT_INSTRUCTIONS,
+            active: true,
+          },
+          ...DEFAULT_PAYMENT_METHODS.filter((method) => method.type !== "easypaisa"),
+        ]
+      : currentSettings?.paymentMethods;
+
   const nextSettings = normalizeSettings({
     ...(currentSettings ?? {}),
     platformName: shouldApplyDefaultPlatformName
@@ -1734,23 +1891,13 @@ async function syncBusinessModel() {
       email: currentSettings?.contactDetails?.email ?? DEFAULT_SUPPORT_EMAIL,
       location: currentSettings?.contactDetails?.location ?? DEFAULT_SUPPORT_LOCATION,
     },
-    paymentDetails: {
-      ...(currentSettings?.paymentDetails ?? {}),
-      accountName: shouldApplyDefaultAccountName
-        ? DEFAULT_ACCOUNT_NAME
-        : currentSettings?.paymentDetails?.accountName,
-      accountNumber: shouldApplyDefaultAccountNumber
-        ? DEFAULT_ACCOUNT_NUMBER
-        : currentSettings?.paymentDetails?.accountNumber,
-      bankName: shouldApplyDefaultBankName
-        ? DEFAULT_BANK_NAME
-        : currentSettings?.paymentDetails?.bankName,
-      instructions: shouldApplyDefaultPaymentInstructions
-        ? DEFAULT_PAYMENT_INSTRUCTIONS
-        : currentSettings?.paymentDetails?.instructions,
-    },
+    paymentMethods: migratedPaymentMethods,
   });
-  await collections.settings.updateOne({}, { $set: nextSettings }, { upsert: true });
+  await collections.settings.updateOne(
+    {},
+    { $set: nextSettings, $unset: { paymentDetails: "" } },
+    { upsert: true },
+  );
 
   const activeAnnouncement = await collections.announcements.findOne({ active: true });
   if (!activeAnnouncement) {
@@ -1787,101 +1934,12 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-function sendPaymentProofFile(req: express.Request, res: express.Response) {
-  const rawFileName = Array.isArray(req.params.fileName)
-    ? req.params.fileName[0]
-    : req.params.fileName;
-
-  if (!rawFileName) {
-    return res.status(400).json({ message: "File name is required." });
-  }
-
-  const safeFileName = path.basename(rawFileName);
-  const filePath = path.join(PAYMENT_PROOF_DIR, safeFileName);
-
-  if (!existsSync(filePath)) {
-    return res.status(404).json({ message: "File not found." });
-  }
-
-  return res.sendFile(filePath);
-}
-
-app.get("/files/:fileName", sendPaymentProofFile);
-app.get("/api/files/:fileName", sendPaymentProofFile);
-
-app.post("/api/auth/register", async (req, res) => {
-  const body = parseSchema(registerSchema, req.body, res);
-  if (!body) {
-    return;
-  }
-
-  const existingUser = await collections.users.findOne({ email: body.email.trim() });
-  if (existingUser) {
-    return res.status(409).json({ message: "Email already exists." });
-  }
-
-  let referredByUserId = null;
-  if (body.referralCode) {
-    const referrer = await collections.users.findOne({ referralCode: body.referralCode });
-    if (referrer) {
-      const referrerUser = referrer as unknown as User;
-      if (!(await canUserRefer(referrerUser))) {
-        return res.status(400).json({
-          message:
-            "This referral code is locked. Sponsor must have at least one approved investment.",
-        });
-      }
-      referredByUserId = referrer.id;
-    }
-  }
-
-  const user: User = {
-    id: generateId("USER"),
-    role: "user",
-    name: body.name.trim(),
-    email: body.email.trim(),
-    phone: body.phone.trim(),
-    passwordHash: await hashPassword(body.password),
-    referralCode: generateReferralCode(),
-    referredByUserId,
-    referralLinkEnabled: true,
-    accountType: "prospect",
-    walletBalance: 0,
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-    lastLoginAt: null,
-  };
-
-  await collections.users.insertOne(user);
-  // Credit signup bonus (PKR 50) as a wallet transaction and notify user
-  await addWalletCredit(
-    user.id,
-    "referral_commission",
-    50,
-    "Signup bonus credited",
-    user.id,
-    "signup_bonus",
-  );
-
-  await addNotification(
-    user.id,
-    "system",
-    "Welcome to Nexo Women Earning System",
-    "Your account is ready. PKR 50 signup bonus has been credited to your wallet. Choose a plan, collect points, and start building your 3-step team.",
-  );
-
-  if (referredByUserId) {
-    await addNotification(
-      referredByUserId,
-      "commission",
-      "New Referral",
-      `${user.name} joined using your referral code. Commission starts when their investment is approved.`,
-    );
-  }
-
-  return res.status(201).json({
-    user: await serializeUser(user, req),
-    token: createToken({ id: user.id, role: user.role, email: user.email }),
+// Public self-signup has been removed: new member accounts can only be created by an
+// existing member via POST /api/user/account-requests, subject to admin approval.
+app.post("/api/auth/register", (_req, res) => {
+  return res.status(410).json({
+    message:
+      "Public sign-up is no longer available. Please ask an existing NexoRise member to create your account for you.",
   });
 });
 
@@ -1976,7 +2034,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
   );
   const totalRewardValue = roundCurrency(
     walletTransactions
-      .filter((transaction) => ["points_reward", "winner_reward"].includes(transaction.type))
+      .filter((transaction) => ["rise_coins_reward", "winner_reward"].includes(transaction.type))
       .reduce((sum, transaction) => sum + transaction.amount, 0),
   );
 
@@ -1984,7 +2042,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
     user: await serializeUser(user, req),
     stats: {
       totalInvestment,
-      totalPoints: rewardProgress.totalPoints,
+      totalRiseCoins: rewardProgress.totalRiseCoins,
       walletBalance: await getWalletBalance(user.id),
       availableBalance: await getAvailableWalletBalance(user.id),
       totalCommissionEarned,
@@ -1999,7 +2057,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
       level3Percent: settings.referralRules.level3Percent,
     },
     rewardProgress: {
-      totalPoints: rewardProgress.totalPoints,
+      totalRiseCoins: rewardProgress.totalRiseCoins,
       nextMilestone: rewardProgress.nextMilestone,
       totalClaimedRewardValue: rewardProgress.totalClaimedRewardValue,
       claimableMilestones: rewardProgress.milestones.filter((milestone) => milestone.claimable),
@@ -2132,6 +2190,123 @@ app.post("/api/user/investments", authenticate, async (req: AuthenticatedRequest
   });
 });
 
+// New member accounts can only be created by an existing logged-in member submitting a
+// request here; the admin reviews and approves/rejects it (see PATCH /api/admin/account-requests/:id).
+app.post("/api/user/account-requests", authenticate, async (req: AuthenticatedRequest, res) => {
+  try {
+    await runAccountRequestScreenshotUpload(req, res);
+  } catch (error) {
+    return respondToUploadError(res, error);
+  }
+
+  const request = req as AuthenticatedRequestWithOptionalFile;
+  const body = parseSchema(accountRequestSchema, request.body, res);
+  if (!body) {
+    return;
+  }
+
+  if (!request.file) {
+    return res.status(400).json({ message: "Upload a payment screenshot before submitting." });
+  }
+
+  const requestedByUser = await getUserById(req.authUser!.id);
+  if (!requestedByUser) {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  const plan = await getPlanById(body.planId);
+  if (!plan) {
+    return res.status(404).json({ message: "Selected plan was not found." });
+  }
+
+  const existingEmail = await collections.users.findOne({ email: body.newMemberEmail.trim() });
+  if (existingEmail) {
+    return res.status(409).json({ message: "A member with this email already exists." });
+  }
+
+  // A referral code is optional and, per rule, never blocks account creation even when
+  // it does not resolve to an existing user -- we just record whatever was given and
+  // separately track whether it resolved.
+  let resolvedReferrerUserId: string | null = null;
+  if (body.referralCode) {
+    const referrer = await collections.users.findOne({ referralCode: body.referralCode.trim() });
+    if (referrer) {
+      resolvedReferrerUserId = (referrer as unknown as User).id;
+    }
+  }
+
+  const proofDetails = buildStoredProofDetails(request.file);
+  const accountRequest: AccountCreationRequest = {
+    id: generateId("ACR"),
+    requestedByUserId: requestedByUser.id,
+    requestedByName: requestedByUser.name,
+    requestedByEmail: requestedByUser.email,
+    newMemberName: body.newMemberName.trim(),
+    newMemberEmail: body.newMemberEmail.trim(),
+    newMemberMobile: body.newMemberMobile.trim(),
+    planId: plan.id,
+    planAmount: plan.price,
+    referralCode: body.referralCode?.trim() || null,
+    resolvedReferrerUserId,
+    paymentNumber: body.paymentNumber.trim(),
+    paymentMethodType: body.paymentMethodType,
+    paymentScreenshotBase64: proofDetails.proofBase64 ?? "",
+    paymentScreenshotMimeType: proofDetails.proofMimeType ?? "",
+    status: "pending",
+    reviewNote: "",
+    createdAt: nowIso(),
+    reviewedAt: null,
+    reviewedByUserId: null,
+  };
+
+  await collections.accountCreationRequests.insertOne(accountRequest);
+
+  const admins = (await collections.users.find({ role: "admin" }).toArray()) as unknown as User[];
+  await Promise.all(
+    admins.map((admin) =>
+      addNotification(
+        admin.id,
+        "system",
+        "New account request",
+        `${requestedByUser.name} requested a new member account for ${accountRequest.newMemberName} (${plan.name}).`,
+      ),
+    ),
+  );
+
+  await addAuditLog(
+    { userId: requestedByUser.id, email: requestedByUser.email, role: requestedByUser.role },
+    "ACCOUNT_REQUEST_SUBMITTED",
+    "account_creation_request",
+    accountRequest.id,
+    { newMemberEmail: accountRequest.newMemberEmail, planId: plan.id },
+  );
+
+  const { paymentScreenshotBase64, ...responseRequest } = accountRequest;
+  return res.status(201).json({
+    request: {
+      ...responseRequest,
+      paymentScreenshotUrl: buildDataUri(
+        accountRequest.paymentScreenshotBase64,
+        accountRequest.paymentScreenshotMimeType,
+      ),
+    },
+  });
+});
+
+app.get("/api/user/account-requests", authenticate, async (req: AuthenticatedRequest, res) => {
+  const items = (await collections.accountCreationRequests
+    .find({ requestedByUserId: req.authUser!.id })
+    .sort({ createdAt: -1 })
+    .toArray()) as unknown as AccountCreationRequest[];
+
+  return res.json({
+    items: items.map(({ paymentScreenshotBase64, ...item }) => ({
+      ...item,
+      paymentScreenshotUrl: buildDataUri(paymentScreenshotBase64, item.paymentScreenshotMimeType),
+    })),
+  });
+});
+
 app.get("/api/user/lucky-draw", authenticate, async (req: AuthenticatedRequest, res) => {
   const activeDraw = await getActiveDraw();
   const luckyDrawEntries = await collections.luckyDrawEntries.find({ userId: req.authUser!.id }).toArray();
@@ -2250,22 +2425,22 @@ app.get("/api/user/referrals", authenticate, async (req: AuthenticatedRequest, r
     return res.status(404).json({ message: "User not found." });
   }
 
-  const [summary, pointsSummary] = await Promise.all([
+  const [summary, riseCoinsSummary] = await Promise.all([
     getReferralCounts(user.id),
-    getUserPointsSummary(user.id),
+    getUserRiseCoinsSummary(user.id),
   ]);
-  const tier = getReferralTierByPoints(pointsSummary.totalPoints);
+  const tier = getReferralTierByRiseCoins(riseCoinsSummary.totalRiseCoins);
 
   return res.json({
     user: await serializeUser(user, req),
     settings: (await getPublicSettings()).referralRules,
     summary,
     rank: {
-      totalPoints: pointsSummary.totalPoints,
-      personalPoints: pointsSummary.personalPoints,
-      referralPoints: pointsSummary.referralPoints,
-      referralBreakdown: pointsSummary.referralBreakdown,
-      pointRules: (await getPublicSettings()).referralPointRules,
+      totalRiseCoins: riseCoinsSummary.totalRiseCoins,
+      personalRiseCoins: riseCoinsSummary.personalRiseCoins,
+      referralRiseCoins: riseCoinsSummary.referralRiseCoins,
+      referralBreakdown: riseCoinsSummary.referralBreakdown,
+      riseCoinsRules: (await getPublicSettings()).referralRiseCoinsRules,
       tier,
       percents: {
         direct: tier.directPercent,
@@ -2309,8 +2484,11 @@ app.get("/api/public/site-info", async (_req, res) => {
     platformName: settings.platformName,
     supportEmail: settings.supportEmail,
     contactDetails: settings.contactDetails,
+    adminWhatsApp: settings.adminWhatsApp,
+    usdExchangeRate: settings.usdExchangeRate,
+    paymentMethods: settings.paymentMethods.filter((method) => method.active),
     referralRules: settings.referralRules,
-    referralPointRules: settings.referralPointRules,
+    referralRiseCoinsRules: settings.referralRiseCoinsRules,
     withdrawalRules: settings.withdrawalRules,
   });
 });
@@ -2320,13 +2498,23 @@ app.get("/api/public/referral-tiers", async (_req, res) => {
   return res.json({ tiers: DEFAULT_REFERRAL_TIERS });
 });
 
-// Authenticated: return the current user's referral rank (points + tier + percents)
+// Public: recent activity feed for the dashboard marquee (signups + withdrawals).
+app.get("/api/public/activity-feed", async (_req, res) => {
+  const items = await collections.activityFeed
+    .find({})
+    .sort({ createdAt: -1 })
+    .limit(30)
+    .toArray();
+  return res.json({ items });
+});
+
+// Authenticated: return the current user's referral rank (riseCoins + tier + percents)
 app.get("/api/user/referral-rank", authenticate, async (req: AuthenticatedRequest, res) => {
   const user = await getUserById(req.authUser!.id);
   if (!user) return res.status(404).json({ message: "User not found." });
 
-  const pointsSummary = await getUserPointsSummary(user.id);
-  const tier = getReferralTierByPoints(pointsSummary.totalPoints);
+  const riseCoinsSummary = await getUserRiseCoinsSummary(user.id);
+  const tier = getReferralTierByRiseCoins(riseCoinsSummary.totalRiseCoins);
   const percents = {
     direct: tier.directPercent,
     indirect: tier.indirectPercent,
@@ -2334,10 +2522,10 @@ app.get("/api/user/referral-rank", authenticate, async (req: AuthenticatedReques
   };
 
   return res.json({
-    totalPoints: pointsSummary.totalPoints,
-    personalPoints: pointsSummary.personalPoints,
-    referralPoints: pointsSummary.referralPoints,
-    referralBreakdown: pointsSummary.referralBreakdown,
+    totalRiseCoins: riseCoinsSummary.totalRiseCoins,
+    personalRiseCoins: riseCoinsSummary.personalRiseCoins,
+    referralRiseCoins: riseCoinsSummary.referralRiseCoins,
+    referralBreakdown: riseCoinsSummary.referralBreakdown,
     tier,
     percents,
   });
@@ -2355,12 +2543,12 @@ app.get("/api/user/rewards", authenticate, async (req: AuthenticatedRequest, res
   ]);
 
   return res.json({
-    totalPoints: rewardProgress.totalPoints,
+    totalRiseCoins: rewardProgress.totalRiseCoins,
     totalClaimedRewardValue: rewardProgress.totalClaimedRewardValue,
     milestones: rewardProgress.milestones,
     claims: rewardProgress.claims,
     walletTransactions: walletTransactions.filter((transaction) =>
-      ["points_reward", "winner_reward"].includes(transaction.type),
+      ["rise_coins_reward", "winner_reward"].includes(transaction.type),
     ),
   });
 });
@@ -2378,7 +2566,7 @@ app.post("/api/user/rewards/claim", authenticate, async (req: AuthenticatedReque
 
   const settings = await getPublicSettings();
   const milestone = settings.rewardMilestones.find(
-    (item) => item.pointsRequired === body.pointsRequired,
+    (item) => item.riseCoinsRequired === body.riseCoinsRequired,
   );
   if (!milestone) {
     return res.status(404).json({ message: "Reward milestone not found." });
@@ -2388,12 +2576,12 @@ app.post("/api/user/rewards/claim", authenticate, async (req: AuthenticatedReque
   }
 
   const rewardProgress = await getRewardMilestoneSummary(user.id);
-  if (rewardProgress.totalPoints < milestone.pointsRequired) {
+  if (rewardProgress.totalRiseCoins < milestone.riseCoinsRequired) {
     return res.status(400).json({ message: "You have not reached this milestone yet." });
   }
 
   const alreadyClaimed = rewardProgress.claims.find(
-    (claim) => claim.pointsRequired === milestone.pointsRequired,
+    (claim) => claim.riseCoinsRequired === milestone.riseCoinsRequired,
   );
   if (alreadyClaimed) {
     return res.status(409).json({ message: "This milestone has already been claimed." });
@@ -2401,17 +2589,17 @@ app.post("/api/user/rewards/claim", authenticate, async (req: AuthenticatedReque
 
   const walletTransaction = await addWalletCredit(
     user.id,
-    "points_reward",
+    "rise_coins_reward",
     milestone.rewardAmount,
     `${milestone.title} reward claimed`,
-    String(milestone.pointsRequired),
-    "points_milestone",
+    String(milestone.riseCoinsRequired),
+    "rise_coins_milestone",
   );
 
   const claim: RewardClaim = {
     id: generateId("RWD"),
     userId: user.id,
-    pointsRequired: milestone.pointsRequired,
+    riseCoinsRequired: milestone.riseCoinsRequired,
     rewardAmount: milestone.rewardAmount,
     walletTransactionId: walletTransaction.id,
     claimedAt: nowIso(),
@@ -2426,10 +2614,10 @@ app.post("/api/user/rewards/claim", authenticate, async (req: AuthenticatedReque
   );
   await addAuditLog(
     { userId: user.id, email: user.email, role: user.role },
-    "POINT_REWARD_CLAIMED",
+    "RISE_COINS_REWARD_CLAIMED",
     "reward_claim",
     claim.id,
-    { pointsRequired: milestone.pointsRequired, rewardAmount: milestone.rewardAmount },
+    { riseCoinsRequired: milestone.riseCoinsRequired, rewardAmount: milestone.rewardAmount },
   );
 
   return res.status(201).json({
@@ -2481,9 +2669,46 @@ app.post("/api/user/feedback", authenticate, async (req: AuthenticatedRequest, r
 
   await collections.feedbacks.insertOne(feedback);
 
-  return res.json({ 
+  return res.json({
     message: "Feedback submitted successfully. Thank you for your feedback!",
-    feedback 
+    feedback
+  });
+});
+
+app.post("/api/user/training/confirm-seat", authenticate, async (req: AuthenticatedRequest, res) => {
+  const body = parseSchema(trainingSeatConfirmationSchema, req.body, res);
+  if (!body) {
+    return;
+  }
+
+  const user = await getUserById(req.authUser!.id);
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  const confirmation: TrainingSeatConfirmation = {
+    id: generateId("TSC"),
+    userId: user.id,
+    name: body.name.trim(),
+    age: body.age,
+    qualification: body.qualification.trim(),
+    agreed: true,
+    createdAt: nowIso(),
+  };
+
+  await collections.trainingSeatConfirmations.insertOne(confirmation);
+  await addAuditLog(
+    { userId: user.id, email: user.email, role: user.role },
+    "TRAINING_SEAT_CONFIRMED",
+    "training_seat_confirmation",
+    confirmation.id,
+    {},
+  );
+
+  return res.status(201).json({
+    message: "Your training seat has been confirmed.",
+    confirmation,
+    whatsappChannelUrl: TRAINING_WHATSAPP_CHANNEL_URL,
   });
 });
 
@@ -2656,7 +2881,7 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
   const rewardClaims = rawRewardClaims as unknown as RewardClaim[];
   const withdrawalRequests = rawWithdrawalRequests as unknown as WithdrawalRequest[];
 
-  const totalPointsIssued = await Promise.all(users.map((user) => getUserPoints(user.id))).then((totals) =>
+  const totalRiseCoinsIssued = await Promise.all(users.map((user) => getUserRiseCoins(user.id))).then((totals) =>
     totals.reduce((sum, total) => sum + total, 0),
   );
 
@@ -2679,7 +2904,7 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
     totalWithdrawn: withdrawalRequests
       .filter((request) => request.status === "approved")
       .reduce((sum, request) => sum + request.amount, 0),
-    totalPointsIssued,
+    totalRiseCoinsIssued,
   };
 
   const recentPayments = await Promise.all(
@@ -2695,7 +2920,7 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
           status: payment.status,
           createdAt: payment.createdAt,
           user: user ? { name: user.name, email: user.email } : null,
-          plan: plan ? { name: plan.name, points: plan.points } : null,
+          plan: plan ? { name: plan.name, riseCoins: plan.riseCoins } : null,
         };
       }),
   );
@@ -2709,7 +2934,7 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
         return {
           id: claim.id,
           rewardAmount: claim.rewardAmount,
-          pointsRequired: claim.pointsRequired,
+          riseCoinsRequired: claim.riseCoinsRequired,
           claimedAt: claim.claimedAt,
           user: user ? { name: user.name, email: user.email } : null,
         };
@@ -2729,7 +2954,8 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
           accountType:
             request.accountType === "easypaisa" ||
             request.accountType === "jazzcash" ||
-            request.accountType === "bank_transfer"
+            request.accountType === "bank_transfer" ||
+            request.accountType === "binance"
               ? request.accountType
               : "bank_transfer",
           accountDetails:
@@ -2761,11 +2987,11 @@ app.post("/api/admin/plans", authenticate, requireAdmin, async (req: Authenticat
     id: generateId("PLAN"),
     name: body.name.trim(),
     price: roundCurrency(body.price),
-    points: Math.round(body.points),
+    riseCoins: Math.round(body.riseCoins),
     level1Percent: Number(body.level1Percent),
     level2Percent: Number(body.level2Percent),
     level3Percent: Number(body.level3Percent),
-    benefits: normalizePlanBenefits(body.benefits, Math.round(body.points), Math.round(body.price)),
+    benefits: normalizePlanBenefits(body.benefits, Math.round(body.riseCoins), Math.round(body.price)),
     featured: body.featured ?? false,
     active: body.active ?? true,
     roiPercent: 0,
@@ -2784,7 +3010,7 @@ app.post("/api/admin/plans", authenticate, requireAdmin, async (req: Authenticat
     {
       name: plan.name,
       price: plan.price,
-      points: plan.points,
+      riseCoins: plan.riseCoins,
       level1Percent: plan.level1Percent,
       level2Percent: plan.level2Percent,
       level3Percent: plan.level3Percent,
@@ -2812,11 +3038,11 @@ app.put("/api/admin/plans/:id", authenticate, requireAdmin, async (req: Authenti
   const nextPlan = {
     name: body.name.trim(),
     price: roundCurrency(body.price),
-    points: Math.round(body.points),
+    riseCoins: Math.round(body.riseCoins),
     level1Percent: Number(body.level1Percent),
     level2Percent: Number(body.level2Percent),
     level3Percent: Number(body.level3Percent),
-    benefits: normalizePlanBenefits(body.benefits, Math.round(body.points), Math.round(body.price)),
+    benefits: normalizePlanBenefits(body.benefits, Math.round(body.riseCoins), Math.round(body.price)),
     featured: body.featured ?? false,
     active: body.active ?? true,
     roiPercent: 0,
@@ -2839,7 +3065,7 @@ app.put("/api/admin/plans/:id", authenticate, requireAdmin, async (req: Authenti
     {
       name: nextPlan.name,
       price: nextPlan.price,
-      points: nextPlan.points,
+      riseCoins: nextPlan.riseCoins,
       level1Percent: nextPlan.level1Percent,
       level2Percent: nextPlan.level2Percent,
       level3Percent: nextPlan.level3Percent,
@@ -2962,7 +3188,7 @@ app.get("/api/admin/users", authenticate, requireAdmin, async (req, res) => {
       return {
         ...serializedUser,
         activeInvestmentValue: await getUserActiveInvestmentValue(user.id),
-        totalPoints: await getUserPoints(user.id),
+        totalRiseCoins: await getUserRiseCoins(user.id),
         referrals: await getReferralCounts(user.id),
       };
     }),
@@ -3010,7 +3236,7 @@ app.get("/api/admin/users/:id", authenticate, requireAdmin, async (req, res) => 
     rewardClaims: await getRewardClaimsForUser(user.id),
     winnerRecords,
     withdrawals: await collections.withdrawalRequests.find({ userId: user.id }).sort({ createdAt: -1 }).toArray(),
-    totalPoints: await getUserPoints(user.id),
+    totalRiseCoins: await getUserRiseCoins(user.id),
   });
 });
 
@@ -3036,7 +3262,7 @@ app.get("/api/admin/payments", authenticate, requireAdmin, async (req, res) => {
             id: plan.id,
             name: plan.name,
             price: plan.price,
-            points: plan.points,
+            riseCoins: plan.riseCoins,
           }
         : null,
       draw,
@@ -3086,18 +3312,7 @@ app.put("/api/admin/payments/:id", authenticate, requireAdmin, async (req, res) 
     if ((payment as any).channel === "investment") {
       const plan = await getPlanById((payment as any).planId);
       if (plan) {
-        await collections.investmentOrders.updateOne(
-          { id: (payment as any).referenceId },
-          { $set: { status: "active", activatedAt: nowIso() } }
-        );
-        await addNotification(
-          (payment as any).userId,
-          "payment",
-          "Investment approved",
-          `${plan.name} is active now. You earned ${plan.points} points toward your reward ranks.`,
-        );
-        await distributeInvestmentCommissions(user, plan, payment.id);
-        await recomputeUserAccountType((payment as any).userId);
+        await activateInvestmentOrder(user, plan, (payment as any).referenceId, payment.id);
       }
     } else if ((payment as any).channel === "lucky_draw") {
       await collections.luckyDrawEntries.updateOne(
@@ -3144,6 +3359,150 @@ app.put("/api/admin/payments/:id", authenticate, requireAdmin, async (req, res) 
     user: await serializeUser(user, req),
   });
 });
+
+app.get("/api/admin/account-requests", authenticate, requireAdmin, async (_req, res) => {
+  const items = (await collections.accountCreationRequests
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray()) as unknown as AccountCreationRequest[];
+
+  return res.json({
+    items: items.map(({ paymentScreenshotBase64, ...item }) => ({
+      ...item,
+      paymentScreenshotUrl: buildDataUri(paymentScreenshotBase64, item.paymentScreenshotMimeType),
+    })),
+  });
+});
+
+app.patch(
+  "/api/admin/account-requests/:id",
+  authenticate,
+  requireAdmin,
+  async (req: AuthenticatedRequest, res) => {
+    const body = parseSchema(accountRequestDecisionSchema, req.body, res);
+    if (!body) {
+      return;
+    }
+
+    const accountRequest = (await collections.accountCreationRequests.findOne({
+      id: req.params.id,
+    })) as unknown as AccountCreationRequest | null;
+    if (!accountRequest) {
+      return res.status(404).json({ message: "Account request not found." });
+    }
+
+    if (accountRequest.status !== "pending") {
+      return res.status(409).json({ message: "This account request has already been reviewed." });
+    }
+
+    if (body.status === "rejected") {
+      await collections.accountCreationRequests.updateOne(
+        { id: accountRequest.id },
+        {
+          $set: {
+            status: "rejected",
+            reviewNote: body.reviewNote?.trim() ?? "",
+            reviewedAt: nowIso(),
+            reviewedByUserId: req.authUser!.id,
+          },
+        },
+      );
+      await addNotification(
+        accountRequest.requestedByUserId,
+        "system",
+        "Account request rejected",
+        body.reviewNote?.trim() ||
+          `Your request to create an account for ${accountRequest.newMemberName} was rejected.`,
+      );
+      await addAuditLog(
+        { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
+        "ACCOUNT_REQUEST_REJECTED",
+        "account_creation_request",
+        accountRequest.id,
+        { reviewNote: body.reviewNote ?? "" },
+      );
+
+      const updated = await collections.accountCreationRequests.findOne({ id: accountRequest.id });
+      return res.json({ request: updated });
+    }
+
+    const plan = await getPlanById(accountRequest.planId);
+    if (!plan) {
+      return res.status(404).json({ message: "Plan for this request was not found." });
+    }
+
+    const createdAt = nowIso();
+    const newUser: User = {
+      id: generateId("USER"),
+      role: "user",
+      name: accountRequest.newMemberName,
+      email: accountRequest.newMemberEmail,
+      phone: accountRequest.newMemberMobile,
+      passwordHash: await hashPassword(accountRequest.newMemberMobile),
+      referralCode: generateReferralCode(),
+      referredByUserId: accountRequest.resolvedReferrerUserId,
+      referralLinkEnabled: true,
+      accountType: "prospect",
+      walletBalance: 0,
+      createdAt,
+      updatedAt: createdAt,
+      lastLoginAt: null,
+    };
+    await collections.users.insertOne(newUser);
+
+    const order: InvestmentOrder = {
+      id: generateId("INV"),
+      userId: newUser.id,
+      planId: plan.id,
+      status: "pending",
+      createdAt,
+      activatedAt: null,
+      rejectedAt: null,
+    };
+    await collections.investmentOrders.insertOne(order);
+
+    // Payment was already verified by admin as part of reviewing this request, so the
+    // investment order is activated immediately using the same shared activation path
+    // (notifications + referral Rise Coins/commission distribution) as a normal approved payment.
+    await activateInvestmentOrder(newUser, plan, order.id, accountRequest.id);
+
+    await collections.accountCreationRequests.updateOne(
+      { id: accountRequest.id },
+      {
+        $set: {
+          status: "approved",
+          reviewNote: body.reviewNote?.trim() ?? "",
+          reviewedAt: nowIso(),
+          reviewedByUserId: req.authUser!.id,
+        },
+      },
+    );
+
+    await addNotification(
+      accountRequest.requestedByUserId,
+      "system",
+      "Account request approved",
+      `The account for ${accountRequest.newMemberName} has been created and their ${plan.name} activated.`,
+    );
+
+    await addActivityFeedEntry({
+      type: "signup",
+      name: newUser.name,
+      planAmount: plan.price,
+    });
+
+    await addAuditLog(
+      { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
+      "ACCOUNT_REQUEST_APPROVED",
+      "account_creation_request",
+      accountRequest.id,
+      { newUserId: newUser.id, planId: plan.id },
+    );
+
+    const updated = await collections.accountCreationRequests.findOne({ id: accountRequest.id });
+    return res.json({ request: updated, user: await serializeUser(newUser, req) });
+  },
+);
 
 app.get("/api/admin/draws", authenticate, requireAdmin, async (_req, res) => {
   const draws = await collections.luckyDraws.find({}).toArray();
@@ -3337,7 +3696,7 @@ app.get("/api/admin/winners", authenticate, requireAdmin, async (_req, res) => {
 app.get("/api/admin/rewards", authenticate, requireAdmin, async (_req, res) => {
   const settings = await getPublicSettings();
   const milestoneTitles = new Map(
-    settings.rewardMilestones.map((milestone) => [milestone.pointsRequired, milestone.title]),
+    settings.rewardMilestones.map((milestone) => [milestone.riseCoinsRequired, milestone.title]),
   );
   const rewardClaims = (await collections.rewardClaims.find({}).sort({ claimedAt: -1 }).toArray()) as unknown as RewardClaim[];
   const items = await Promise.all(
@@ -3345,7 +3704,7 @@ app.get("/api/admin/rewards", authenticate, requireAdmin, async (_req, res) => {
       const user = await getUserById(claim.userId);
       return {
         ...claim,
-        title: milestoneTitles.get(claim.pointsRequired) ?? `${claim.pointsRequired} points`,
+        title: milestoneTitles.get(claim.riseCoinsRequired) ?? `${claim.riseCoinsRequired} Rise Coins`,
         user: user ? { id: user.id, name: user.name, email: user.email } : null,
       };
     }),
@@ -3412,6 +3771,12 @@ app.patch("/api/admin/withdrawals/:id", authenticate, requireAdmin, async (req, 
       "Withdrawal approved",
       `Your withdrawal of ${request.amount.toLocaleString("en-PK")} PKR has been approved.`,
     );
+    await addActivityFeedEntry({
+      type: "withdrawal",
+      name: user.name,
+      method: request.accountType,
+      amount: request.netAmount,
+    });
   } else {
     await addNotification(
       user.id,
@@ -3475,24 +3840,29 @@ app.put("/api/admin/settings", authenticate, requireAdmin, async (req: Authentic
         },
         enableRegistrations: body.enableRegistrations,
         maintenanceMode: body.maintenanceMode,
-        paymentDetails: {
-          accountName: body.paymentDetails.accountName,
-          accountNumber: body.paymentDetails.accountNumber,
-          bankName: body.paymentDetails.bankName,
-          instructions: body.paymentDetails.instructions,
-        },
+        paymentMethods: body.paymentMethods.map((method) => ({
+          id: method.id && method.id.length > 0 ? method.id : generateId("PM"),
+          type: method.type,
+          label: method.label,
+          accountNumber: method.accountNumber,
+          accountHolderName: method.accountHolderName,
+          extraInstructions: method.extraInstructions ?? "",
+          active: method.active ?? true,
+        })),
+        adminWhatsApp: body.adminWhatsApp,
+        usdExchangeRate: body.usdExchangeRate,
         referralRules: {
           level1Percent: body.referralRules.level1Percent,
           level2Percent: body.referralRules.level2Percent,
           level3Percent: body.referralRules.level3Percent,
         },
-        referralPointRules: {
-          level1Percent: body.referralPointRules.level1Percent,
-          level2Percent: body.referralPointRules.level2Percent,
-          level3Percent: body.referralPointRules.level3Percent,
+        referralRiseCoinsRules: {
+          level1Percent: body.referralRiseCoinsRules.level1Percent,
+          level2Percent: body.referralRiseCoinsRules.level2Percent,
+          level3Percent: body.referralRiseCoinsRules.level3Percent,
         },
         rewardMilestones: body.rewardMilestones.map((milestone) => ({
-          pointsRequired: milestone.pointsRequired,
+          riseCoinsRequired: milestone.riseCoinsRequired,
           rewardAmount: milestone.rewardAmount,
           title: milestone.title,
         })),
@@ -3558,7 +3928,7 @@ app.get("/api/admin/transactions", authenticate, requireAdmin, async (req, res) 
       status: payment.status,
       createdAt: payment.createdAt,
       note: payment.proofNote,
-      proofFileUrl: payment.proofFilePath ? getPublicFileUrl(req, payment.proofFilePath) : null,
+      proofFileUrl: buildDataUri(payment.proofBase64, payment.proofMimeType),
       reviewNote: payment.reviewNote,
       referenceId: payment.referenceId,
       referenceType: payment.channel,
@@ -3620,10 +3990,95 @@ app.get("/api/admin/audit-logs", authenticate, requireAdmin, async (_req, res) =
   res.json({ items: auditLogs });
 });
 
+// Irreversible: wipes member/transaction data ahead of a public launch. `settings` and
+// `plans` are deliberately left untouched. Requires the calling admin's current password
+// as a safeguard against accidental triggering.
+app.post(
+  "/api/admin/system/reset-for-launch",
+  authenticate,
+  requireAdmin,
+  async (req: AuthenticatedRequest, res) => {
+    const body = parseSchema(resetForLaunchSchema, req.body, res);
+    if (!body) {
+      return;
+    }
+
+    const admin = await getUserById(req.authUser!.id);
+    if (!admin) {
+      return res.status(404).json({ message: "Admin user not found." });
+    }
+
+    if (!(await verifyPassword(body.confirmPassword, admin.passwordHash))) {
+      return res.status(401).json({ message: "Incorrect password. Reset was not performed." });
+    }
+
+    const [
+      users,
+      paymentSubmissions,
+      investmentOrders,
+      walletTransactions,
+      luckyDrawEntries,
+      withdrawalRequests,
+      notifications,
+      auditLogs,
+      rewardClaims,
+      winnerRecords,
+      accountCreationRequests,
+      activityFeed,
+      trainingSeatConfirmations,
+    ] = await Promise.all([
+      collections.users.deleteMany({ role: { $ne: "admin" } }),
+      collections.paymentSubmissions.deleteMany({}),
+      collections.investmentOrders.deleteMany({}),
+      collections.walletTransactions.deleteMany({}),
+      collections.luckyDrawEntries.deleteMany({}),
+      collections.withdrawalRequests.deleteMany({}),
+      collections.notifications.deleteMany({}),
+      collections.auditLogs.deleteMany({}),
+      collections.rewardClaims.deleteMany({}),
+      collections.winnerRecords.deleteMany({}),
+      collections.accountCreationRequests.deleteMany({}),
+      collections.activityFeed.deleteMany({}),
+      collections.trainingSeatConfirmations.deleteMany({}),
+    ]);
+
+    const deletedCounts = {
+      users: users.deletedCount ?? 0,
+      paymentSubmissions: paymentSubmissions.deletedCount ?? 0,
+      investmentOrders: investmentOrders.deletedCount ?? 0,
+      walletTransactions: walletTransactions.deletedCount ?? 0,
+      luckyDrawEntries: luckyDrawEntries.deletedCount ?? 0,
+      withdrawalRequests: withdrawalRequests.deletedCount ?? 0,
+      notifications: notifications.deletedCount ?? 0,
+      auditLogs: auditLogs.deletedCount ?? 0,
+      rewardClaims: rewardClaims.deletedCount ?? 0,
+      winnerRecords: winnerRecords.deletedCount ?? 0,
+      accountCreationRequests: accountCreationRequests.deletedCount ?? 0,
+      activityFeed: activityFeed.deletedCount ?? 0,
+      trainingSeatConfirmations: trainingSeatConfirmations.deletedCount ?? 0,
+    };
+
+    // This audit log is written after the wipe (auditLogs was just cleared) so it becomes
+    // the first record of the fresh system.
+    await addAuditLog(
+      { userId: admin.id, email: admin.email, role: admin.role },
+      "SYSTEM_RESET_FOR_LAUNCH",
+      "system",
+      "reset-for-launch",
+      deletedCounts,
+    );
+
+    return res.json({
+      message: "System has been reset for launch. Settings and plans were left untouched.",
+      deletedCounts,
+    });
+  },
+);
+
 // Root route for API information
 function sendApiInfo(_req: express.Request, res: express.Response) {
   res.json({
-    name: "Nexo Women Earning System API",
+    name: "NexoRise API",
     version: "1.0.0",
     status: "running",
     endpoints: {
@@ -3644,6 +4099,14 @@ function sendApiInfo(_req: express.Request, res: express.Response) {
         notifications: "GET /api/user/notifications",
         markNotificationRead: "PUT /api/user/notifications/:id/read",
         transactions: "GET /api/user/transactions",
+        accountRequests: "POST /api/user/account-requests",
+        myAccountRequests: "GET /api/user/account-requests",
+        confirmTrainingSeat: "POST /api/user/training/confirm-seat",
+      },
+      public: {
+        siteInfo: "GET /api/public/site-info",
+        referralTiers: "GET /api/public/referral-tiers",
+        activityFeed: "GET /api/public/activity-feed",
       },
       admin: {
         users: "GET /api/admin/users",
@@ -3663,6 +4126,9 @@ function sendApiInfo(_req: express.Request, res: express.Response) {
         updateSettings: "PUT /api/admin/settings",
         transactions: "GET /api/admin/transactions",
         auditLogs: "GET /api/admin/audit-logs",
+        accountRequests: "GET /api/admin/account-requests",
+        reviewAccountRequest: "PATCH /api/admin/account-requests/:id",
+        resetForLaunch: "POST /api/admin/system/reset-for-launch",
       },
     },
   });
@@ -3676,7 +4142,7 @@ async function startServer() {
   await ensureBackendReady();
   
   app.listen(PORT, () => {
-    console.log(`🚀 Nexo Backend Server running on port ${PORT}`);
+    console.log(`🚀 NexoRise Backend Server running on port ${PORT}`);
     console.log(`📊 API Documentation: http://localhost:${PORT}/`);
   });
 }
