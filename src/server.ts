@@ -56,9 +56,6 @@ const DEFAULT_ACCOUNT_NUMBER = "03448252109";
 const DEFAULT_BANK_NAME = "EasyPaisa";
 const DEFAULT_PAYMENT_INSTRUCTIONS =
   "Send payment to this EasyPaisa account and submit your transaction ID or proof screenshot for admin approval.";
-const DEFAULT_DRAW_ENTRY_FEE = 500;
-const DEFAULT_DRAW_TITLE = "Monthly Lucky Draw";
-const DEFAULT_DRAW_DAYS = 30;
 const DEFAULT_ANNOUNCEMENT_TITLE = "Join, Build Your Team & Start Earning";
 const DEFAULT_ANNOUNCEMENT_MESSAGE =
   "Choose from 800 to 10000 PKR plans, earn 3-step referral income, unlock rewards up to 35,000 PKR, and withdraw from 500 PKR with 10% tax in 24-48 hours.";
@@ -72,11 +69,8 @@ let mongoDb: Db;
 let collections: {
   users: Collection;
   plans: Collection;
-  luckyDraws: Collection;
   paymentSubmissions: Collection;
   investmentOrders: Collection;
-  luckyDrawEntries: Collection;
-  winnerRecords: Collection;
   walletTransactions: Collection;
   notifications: Collection;
   announcements: Collection;
@@ -106,27 +100,28 @@ function isValidMongoUri(uri: string) {
 // Types
 type UserRole = "user" | "admin";
 
-type AccountType = "prospect" | "lucky_draw" | "investor" | "hybrid";
+// Public self-signup and the lucky draw are both gone: every real user now enters the
+// system the same way (an existing member submits an account-creation request, admin
+// approves it, and the plan activates immediately), so every user is an "investor" from
+// the moment they're created. Kept as a type (rather than inlining the literal) in case a
+// future account state is ever needed, but no code path should produce anything else.
+type AccountType = "investor";
 
-type PaymentChannel = "investment" | "lucky_draw";
+type UserStatus = "active" | "banned";
+
+type PaymentChannel = "investment";
 
 type PaymentStatus = "pending" | "approved" | "rejected";
 
 type InvestmentStatus = "pending" | "active" | "rejected";
 
-type EntryStatus = "pending" | "active" | "rejected" | "winner";
-
 type WalletTransactionType =
   | "investment_commission"
-  | "lucky_draw_commission"
-  | "winner_reward"
   | "referral_commission"
   | "rise_coins_reward"
   | "withdrawal";
 
 type NotificationType = "system" | "payment" | "commission" | "reward" | "withdrawal";
-
-type DrawStatus = "open" | "completed";
 
 type WithdrawalRequestStatus = "pending" | "approved" | "rejected";
 type WithdrawalAccountType = "easypaisa" | "jazzcash" | "bank_transfer" | "binance";
@@ -148,6 +143,7 @@ type User = {
   referredByUserId: string | null;
   referralLinkEnabled: boolean;
   accountType: AccountType;
+  status: UserStatus;
   walletBalance: number;
   createdAt: string;
   updatedAt: string;
@@ -172,24 +168,12 @@ type Plan = {
   deletedAt?: string | null;
 };
 
-type LuckyDraw = {
-  id: string;
-  title: string;
-  entryFee: number;
-  drawDate: string;
-  terms: string[];
-  status: DrawStatus;
-  createdAt: string;
-  updatedAt: string;
-};
-
 type PaymentSubmission = {
   id: string;
   userId: string;
   channel: PaymentChannel;
   amount: number;
   planId: string | null;
-  drawId: string | null;
   referenceId: string;
   manualTransactionId: string;
   proofNote: string;
@@ -211,29 +195,6 @@ type InvestmentOrder = {
   createdAt: string;
   activatedAt: string | null;
   rejectedAt: string | null;
-};
-
-type LuckyDrawEntry = {
-  id: string;
-  userId: string;
-  drawId: string;
-  ticketId: string;
-  paymentId: string;
-  status: EntryStatus;
-  createdAt: string;
-  activatedAt: string | null;
-  rewardAmount: number;
-};
-
-type WinnerRecord = {
-  id: string;
-  drawId: string;
-  entryId: string;
-  userId: string;
-  rewardAmount: number;
-  note: string;
-  announcedByUserId: string;
-  announcedAt: string;
 };
 
 type WalletTransaction = {
@@ -523,25 +484,9 @@ const investmentSubmissionSchema = z.object({
   proofNote: z.string().trim().optional(),
 });
 
-const luckyDrawEntrySchema = z.object({
-  drawId: z.string().min(1),
-  manualTransactionId: z.string().trim().min(1),
-  proofNote: z.string().trim().optional(),
-});
-
 const paymentDecisionSchema = z.object({
   status: z.enum(["approved", "rejected"]),
   reviewNote: z.string().trim().optional(),
-});
-
-const drawUpdateSchema = z.object({
-  drawDate: z.string().trim().min(1),
-});
-
-const winnerSelectionSchema = z.object({
-  entryIds: z.array(z.string()),
-  rewardAmount: z.number().positive(),
-  note: z.string().trim().min(1),
 });
 
 const rewardClaimSchema = z.object({
@@ -630,6 +575,11 @@ const profileSchema = z.object({
   phone: z.string().trim().min(10),
 });
 
+const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(6),
+});
+
 const feedbackSchema = z.object({
   name: z.string().trim().min(2).max(100),
   message: z.string().trim().min(5).max(5000),
@@ -648,6 +598,16 @@ const accountRequestSchema = z.object({
 const accountRequestDecisionSchema = z.object({
   status: z.enum(["approved", "rejected"]),
   reviewNote: z.string().trim().optional(),
+});
+
+const adminUserStatusSchema = z.object({
+  status: z.enum(["active", "banned"]),
+});
+
+const adminUserEditSchema = z.object({
+  name: z.string().trim().min(3).optional(),
+  email: z.string().trim().email().optional(),
+  phone: z.string().trim().min(10).optional(),
 });
 
 const trainingSeatConfirmationSchema = z.object({
@@ -673,15 +633,6 @@ function generateReferralCode() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   let result = "";
   for (let i = 0; i < 8; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
-
-function generateTicketId() {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  let result = "";
-  for (let i = 0; i < 12; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return result;
@@ -855,16 +806,6 @@ async function getUserById(userId: string): Promise<User | null> {
 async function getPlanById(planId: string): Promise<Plan | null> {
   const plan = await collections.plans.findOne({ id: planId });
   return plan ? normalizePlan(plan) : null;
-}
-
-async function getDrawById(drawId: string): Promise<LuckyDraw | null> {
-  const draw = await collections.luckyDraws.findOne({ id: drawId });
-  return draw as unknown as LuckyDraw | null;
-}
-
-async function getActiveDraw(): Promise<LuckyDraw | null> {
-  const draw = await collections.luckyDraws.findOne({ status: "open" });
-  return draw as unknown as LuckyDraw | null;
 }
 
 const DEFAULT_PAYMENT_METHODS: PaymentMethod[] = [
@@ -1278,6 +1219,7 @@ async function serializeUser(user: User, req: express.Request | null = null) {
     referralLinkEnabled,
     referralLink: referralLinkEnabled ? getReferralLink(req, user.referralCode) : null,
     accountType: user.accountType,
+    status: user.status ?? "active",
     walletBalance: await getWalletBalance(user.id),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -1512,31 +1454,11 @@ async function distributeInvestmentCommissions(user: User, plan: Plan, paymentId
   }
 }
 
-async function recomputeUserAccountType(userId: string) {
-  const user = await getUserById(userId);
-  if (!user) {
-    return;
-  }
-
-  const activeInvestmentCount = await collections.investmentOrders.countDocuments({
-    userId,
-    status: "active",
-  });
-
-  const newAccountType: AccountType = activeInvestmentCount > 0 ? "investor" : "prospect";
-  if (newAccountType !== user.accountType) {
-    await collections.users.updateOne(
-      { id: userId },
-      { $set: { accountType: newAccountType, updatedAt: nowIso() } },
-    );
-  }
-}
-
 // Shared activation path used both by the admin payment-approval flow
 // (PUT /api/admin/payments/:id) and the account-creation-request approval flow
 // (PATCH /api/admin/account-requests/:id): marks the investment order active,
-// notifies the user, distributes referral Rise Coins/commissions, and recomputes
-// account type. Kept as one function so both callers stay behaviorally identical.
+// notifies the user, and distributes referral Rise Coins/commissions. Every user is
+// already "investor" from creation, so there is no account-type recomputation step.
 async function activateInvestmentOrder(
   user: User,
   plan: Plan,
@@ -1554,7 +1476,6 @@ async function activateInvestmentOrder(
     `${plan.name} has been activated. You earned ${plan.riseCoins} Rise Coins toward your reward ranks.`,
   );
   await distributeInvestmentCommissions(user, plan, referenceId);
-  await recomputeUserAccountType(user.id);
 }
 
 function calculateInvestmentMetrics(order: InvestmentOrder, plan: Plan) {
@@ -1658,11 +1579,8 @@ async function connectToMongoDB() {
       collections = {
         users: mongoDb.collection('users'),
         plans: mongoDb.collection('plans'),
-        luckyDraws: mongoDb.collection('luckyDraws'),
         paymentSubmissions: mongoDb.collection('paymentSubmissions'),
         investmentOrders: mongoDb.collection('investmentOrders'),
-        luckyDrawEntries: mongoDb.collection('luckyDrawEntries'),
-        winnerRecords: mongoDb.collection('winnerRecords'),
         walletTransactions: mongoDb.collection('walletTransactions'),
         notifications: mongoDb.collection('notifications'),
         announcements: mongoDb.collection('announcements'),
@@ -1715,18 +1633,6 @@ async function initializeDatabase() {
     deletedAt: null,
   }));
 
-  // Create default lucky draw
-  const defaultDraw: LuckyDraw = {
-    id: generateId("DRAW"),
-    title: "Monthly Lucky Draw",
-    entryFee: 500,
-    drawDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    terms: ["One entry per payment", "Winners selected randomly", "Prize credited to wallet"],
-    status: "open",
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-  };
-
   // Create default settings
   const defaultSettings: Settings = normalizeSettings({
     platformName: DEFAULT_PLATFORM_NAME,
@@ -1756,6 +1662,7 @@ async function initializeDatabase() {
     referredByUserId: null,
     referralLinkEnabled: true,
     accountType: "investor",
+    status: "active",
     walletBalance: 0,
     createdAt: nowIso(),
     updatedAt: nowIso(),
@@ -1764,7 +1671,6 @@ async function initializeDatabase() {
 
   // Insert all default data
   await collections.plans.insertMany(defaultPlans);
-  await collections.luckyDraws.insertOne(defaultDraw);
   await collections.settings.insertOne(defaultSettings);
   await collections.users.insertOne(defaultAdmin);
   await collections.announcements.insertOne({
@@ -1852,6 +1758,46 @@ async function syncBusinessModel() {
         updatedAt: nowIso(),
       },
     },
+  );
+
+  // One-time cleanup (runs on every boot): plans that aren't part of the current 10-plan
+  // business model accumulate over time (old 7-plan model, admin-created test plans, etc.)
+  // and were previously only ever deactivated, never removed -- which is why the admin
+  // plan list could balloon well past 10. Hard-delete any non-default plan that has zero
+  // investment orders, payment submissions, or account-creation requests referencing it,
+  // since there is no history that depends on keeping it around. Plans with history are
+  // left as inactive/legacy records.
+  const nonDefaultPlans = await collections.plans
+    .find({ id: { $nin: seededPlanIds } })
+    .project({ id: 1 })
+    .toArray();
+  for (const rawPlan of nonDefaultPlans) {
+    const planId = typeof rawPlan.id === "string" ? rawPlan.id : "";
+    if (!planId) continue;
+
+    const [linkedInvestments, linkedPayments, linkedAccountRequests] = await Promise.all([
+      collections.investmentOrders.countDocuments({ planId }),
+      collections.paymentSubmissions.countDocuments({ planId }),
+      collections.accountCreationRequests.countDocuments({ planId }),
+    ]);
+
+    if (linkedInvestments === 0 && linkedPayments === 0 && linkedAccountRequests === 0) {
+      await collections.plans.deleteOne({ id: planId });
+    }
+  }
+
+  // Every real user now enters through the account-creation-request approval flow and is
+  // an "investor" from creation. Backfill any legacy user left over from a removed flow
+  // (self-signup / lucky draw) so no user-facing code path can encounter a stale value.
+  await collections.users.updateMany(
+    { role: "user", accountType: { $ne: "investor" } },
+    { $set: { accountType: "investor", updatedAt: nowIso() } },
+  );
+
+  // Backfill the ban/unban `status` field onto any user created before it existed.
+  await collections.users.updateMany(
+    { status: { $exists: false } },
+    { $set: { status: "active" } },
   );
 
   const currentSettings = (await collections.settings.findOne({})) as
@@ -1954,6 +1900,10 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(401).json({ message: "Invalid email or password." });
   }
 
+  if (user.status === "banned") {
+    return res.status(403).json({ message: "This account has been banned. Please contact support." });
+  }
+
   await collections.users.updateOne(
     { id: user.id },
     { $set: { lastLoginAt: nowIso() } }
@@ -1989,6 +1939,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
     rewardProgress,
     notifications,
     settings,
+    trainingSeatConfirmation,
   ] =
     await Promise.all([
       getUserInvestmentOrders(user.id),
@@ -2001,6 +1952,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
         .limit(8)
         .toArray(),
       getPublicSettings(),
+      collections.trainingSeatConfirmations.findOne({ userId: user.id }),
     ]);
 
   const investments = await Promise.all(
@@ -2026,7 +1978,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
   const totalCommissionEarned = roundCurrency(
     walletTransactions
       .filter((transaction) =>
-        ["referral_commission", "investment_commission", "lucky_draw_commission"].includes(
+        ["referral_commission", "investment_commission"].includes(
           transaction.type,
         ) && transaction.referenceType !== "signup_bonus",
       )
@@ -2034,7 +1986,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
   );
   const totalRewardValue = roundCurrency(
     walletTransactions
-      .filter((transaction) => ["rise_coins_reward", "winner_reward"].includes(transaction.type))
+      .filter((transaction) => transaction.type === "rise_coins_reward")
       .reduce((sum, transaction) => sum + transaction.amount, 0),
   );
 
@@ -2065,6 +2017,7 @@ app.get("/api/user/dashboard", authenticate, async (req: AuthenticatedRequest, r
     announcements: await collections.announcements.find({ active: true }).toArray(),
     notifications,
     recentTransactions: walletTransactions.slice(0, 6),
+    trainingSeatConfirmed: Boolean(trainingSeatConfirmation),
   });
 });
 
@@ -2155,7 +2108,6 @@ app.post("/api/user/investments", authenticate, async (req: AuthenticatedRequest
     channel: "investment",
     amount: plan.price,
     planId: plan.id,
-    drawId: null,
     referenceId: order.id,
     manualTransactionId: body.manualTransactionId.trim(),
     proofNote: body.proofNote?.trim() ?? "",
@@ -2307,118 +2259,6 @@ app.get("/api/user/account-requests", authenticate, async (req: AuthenticatedReq
   });
 });
 
-app.get("/api/user/lucky-draw", authenticate, async (req: AuthenticatedRequest, res) => {
-  const activeDraw = await getActiveDraw();
-  const luckyDrawEntries = await collections.luckyDrawEntries.find({ userId: req.authUser!.id }).toArray();
-  const items = await Promise.all(luckyDrawEntries.map(async (entry: any) => {
-    const draw = await getDrawById(entry.drawId);
-    const payment = await collections.paymentSubmissions.findOne({ id: entry.paymentId });
-    return {
-      ...entry,
-      draw,
-      payment: payment ? serializePaymentSubmission(payment as any, req) : null,
-    };
-  }));
-
-  const sortedItems = items.sort(
-    (left: any, right: any) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
-  );
-
-  return res.json({
-    activeDraw,
-    items: sortedItems,
-    totalEntries: luckyDrawEntries.length,
-  });
-});
-
-app.post("/api/user/lucky-draw-entries", authenticate, async (req: AuthenticatedRequest, res) => {
-  try {
-    await runPaymentProofUpload(req, res);
-  } catch (error) {
-    return respondToUploadError(res, error);
-  }
-
-  const request = req as AuthenticatedRequestWithOptionalFile;
-  const body = parseSchema(luckyDrawEntrySchema, request.body, res);
-  if (!body) {
-    return;
-  }
-
-  if (!hasPaymentProof(body.proofNote, request.file)) {
-    return res.status(400).json({
-      message: "Add a payment note or upload a proof file before submitting.",
-    });
-  }
-
-  const user = await getUserById(req.authUser!.id);
-  const draw = await getDrawById(body.drawId);
-
-  if (!user || !draw || (draw as any).status !== "open") {
-    return res.status(404).json({ message: "Active lucky draw was not found." });
-  }
-
-  const duplicateTransaction = await collections.paymentSubmissions.findOne({
-    manualTransactionId: body.manualTransactionId.toLowerCase()
-  });
-  if (duplicateTransaction) {
-    return res.status(409).json({ message: "Transaction ID has already been submitted." });
-  }
-
-  const createdAt = nowIso();
-  const paymentId = generateId("PAY");
-  const entry: LuckyDrawEntry = {
-    id: generateId("ENT"),
-    userId: (user as any).id,
-    drawId: (draw as any).id,
-    ticketId: generateTicketId(),
-    paymentId,
-    status: "pending",
-    createdAt,
-    activatedAt: null,
-    rewardAmount: 0,
-  };
-
-  const payment: PaymentSubmission = {
-    id: paymentId,
-    userId: (user as any).id,
-    channel: "lucky_draw",
-    amount: (draw as any).entryFee,
-    planId: null,
-    drawId: (draw as any).id,
-    referenceId: entry.id,
-    manualTransactionId: body.manualTransactionId.trim(),
-    proofNote: body.proofNote?.trim() ?? "",
-    ...buildStoredProofDetails(request.file),
-    status: "pending",
-    reviewedByUserId: null,
-    reviewNote: "",
-    createdAt,
-    reviewedAt: null,
-  };
-
-  await collections.luckyDrawEntries.insertOne(entry);
-  await collections.paymentSubmissions.insertOne(payment);
-  await addNotification(
-    (user as any).id,
-    "payment",
-    "Lucky draw entry submitted",
-    "Your entry is pending payment verification. A unique ticket has already been reserved for you.",
-  );
-  await addAuditLog(
-    { userId: (user as any).id, email: (user as any).email, role: (user as any).role },
-    "LUCKY_DRAW_ENTRY_SUBMITTED",
-    "lucky_draw_entry",
-    entry.id,
-    { drawId: (draw as any).id, paymentId: payment.id, ticketId: entry.ticketId },
-  );
-
-  return res.status(201).json({
-    entry,
-    payment: serializePaymentSubmission(payment, req),
-    draw,
-  });
-});
-
 app.get("/api/user/referrals", authenticate, async (req: AuthenticatedRequest, res) => {
   const user = await getUserById(req.authUser!.id);
   if (!user) {
@@ -2547,9 +2387,7 @@ app.get("/api/user/rewards", authenticate, async (req: AuthenticatedRequest, res
     totalClaimedRewardValue: rewardProgress.totalClaimedRewardValue,
     milestones: rewardProgress.milestones,
     claims: rewardProgress.claims,
-    walletTransactions: walletTransactions.filter((transaction) =>
-      ["rise_coins_reward", "winner_reward"].includes(transaction.type),
-    ),
+    walletTransactions: walletTransactions.filter((transaction) => transaction.type === "rise_coins_reward"),
   });
 });
 
@@ -2644,6 +2482,43 @@ app.put("/api/user/profile", authenticate, async (req: AuthenticatedRequest, res
   );
 
   return res.json({ message: "Profile updated successfully" });
+});
+
+app.put("/api/user/password", authenticate, async (req: AuthenticatedRequest, res) => {
+  const body = parseSchema(passwordChangeSchema, req.body, res);
+  if (!body) {
+    return;
+  }
+
+  const user = await getUserById(req.authUser!.id);
+  if (!user) {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  if (!(await verifyPassword(body.currentPassword, user.passwordHash))) {
+    return res.status(400).json({ message: "Current password is incorrect." });
+  }
+
+  const newPasswordHash = await hashPassword(body.newPassword);
+
+  await collections.users.updateOne(
+    { id: user.id },
+    {
+      $set: {
+        passwordHash: newPasswordHash,
+        updatedAt: nowIso(),
+      },
+    },
+  );
+
+  await addAuditLog(
+    { userId: user.id, email: user.email, role: user.role },
+    "PASSWORD_CHANGED",
+    "user",
+    user.id,
+  );
+
+  return res.json({ message: "Password updated." });
 });
 
 app.post("/api/user/feedback", authenticate, async (req: AuthenticatedRequest, res) => {
@@ -2769,6 +2644,10 @@ app.post("/api/user/withdrawals", authenticate, async (req: AuthenticatedRequest
     return res.status(404).json({ message: "User not found." });
   }
 
+  if (user.status === "banned") {
+    return res.status(403).json({ message: "This account has been banned and cannot submit new withdrawal requests." });
+  }
+
   const settings = await getPublicSettings();
   if (body.amount < settings.withdrawalRules.minimumAmount) {
     return res.status(400).json({
@@ -2856,8 +2735,7 @@ app.get("/api/user/transactions", authenticate, async (req: AuthenticatedRequest
     items: transactions.map(transaction => ({
       ...transaction,
       type:
-        transaction.type === "investment_commission" ||
-        transaction.type === "lucky_draw_commission"
+        transaction.type === "investment_commission"
           ? "referral_commission"
           : transaction.type,
     }))
@@ -2885,25 +2763,52 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
     totals.reduce((sum, total) => sum + total, 0),
   );
 
+  const approvedInvestmentVolume = payments
+    .filter((payment) => payment.status === "approved")
+    .reduce((sum, payment) => sum + payment.amount, 0);
+  const pendingWithdrawalAmount = withdrawalRequests
+    .filter((request) => request.status === "pending")
+    .reduce((sum, request) => sum + request.amount, 0);
+  const approvedWithdrawalNetAmount = withdrawalRequests
+    .filter((request) => request.status === "approved")
+    .reduce((sum, request) => sum + request.netAmount, 0);
+  const totalRewardsClaimedAmount = rewardClaims.reduce((sum, claim) => sum + claim.rewardAmount, 0);
+  // All credited wallet transactions (referral/investment commissions + Rise Coins reward
+  // credits) across every user -- this deliberately excludes deposits, since a plan
+  // purchase is never itself a wallet credit, only what it later pays out is.
+  const totalEarning = walletTransactions
+    .filter((transaction) => transaction.direction === "credit")
+    .reduce((sum, transaction) => sum + transaction.amount, 0);
+
   const stats = {
     totalUsers: users.length,
-    activeMembers: users.filter((user) => user.accountType === "investor" || user.accountType === "hybrid").length,
+    activeMembers: users.filter((user) => user.accountType === "investor").length,
     pendingPayments: payments.filter((payment) => payment.status === "pending").length,
     pendingWithdrawals: withdrawalRequests.filter((request) => request.status === "pending").length,
-    totalInvestmentVolume: payments
-      .filter((payment) => payment.status === "approved")
-      .reduce((sum, payment) => sum + payment.amount, 0),
+    totalInvestmentVolume: approvedInvestmentVolume,
+    // Total money that has come IN via approved plans -- same figure as
+    // totalInvestmentVolume above, named to match the "Total Deposit" dashboard tile.
+    totalDeposit: approvedInvestmentVolume,
     totalReferralCommissions: walletTransactions
       .filter((transaction) =>
-        ["referral_commission", "investment_commission", "lucky_draw_commission"].includes(
+        ["referral_commission", "investment_commission"].includes(
           transaction.type,
         ) && transaction.referenceType !== "signup_bonus",
       )
       .reduce((sum, transaction) => sum + transaction.amount, 0),
-    totalRewardClaims: rewardClaims.reduce((sum, claim) => sum + claim.rewardAmount, 0),
+    // Sum of all credited wallet transactions across all users (commissions + any other
+    // credits), excluding deposits.
+    totalEarning,
+    totalRewardClaims: totalRewardsClaimedAmount,
+    // Reward Box tile: total milestone rewards paid out via rewardClaims.
+    totalRewardsClaimed: totalRewardsClaimedAmount,
     totalWithdrawn: withdrawalRequests
       .filter((request) => request.status === "approved")
       .reduce((sum, request) => sum + request.amount, 0),
+    // "Pending" tile: sum of amounts on pending withdrawal requests.
+    pendingWithdrawalAmount,
+    // "Given" tile: sum of netAmount (what was actually paid out) on approved withdrawal requests.
+    totalWithdrawnAmount: approvedWithdrawalNetAmount,
     totalRiseCoinsIssued,
   };
 
@@ -3181,7 +3086,14 @@ app.put("/api/admin/feedbacks/:id/read", authenticate, requireAdmin, async (req:
 });
 
 app.get("/api/admin/users", authenticate, requireAdmin, async (req, res) => {
-  const users = (await collections.users.find({ role: "user" }).sort({ createdAt: -1 }).toArray()) as unknown as User[];
+  const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+  const query: Record<string, unknown> = { role: "user" };
+  if (search) {
+    const searchRegex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    query.$or = [{ name: searchRegex }, { email: searchRegex }, { phone: searchRegex }];
+  }
+
+  const users = (await collections.users.find(query).sort({ createdAt: -1 }).toArray()) as unknown as User[];
   const items = await Promise.all(
     users.map(async (user) => {
       const serializedUser = await serializeUser(user, req);
@@ -3218,26 +3130,88 @@ app.get("/api/admin/users/:id", authenticate, requireAdmin, async (req, res) => 
     }),
   );
 
-  const luckyDrawEntries = (await collections.luckyDrawEntries.find({ userId: user.id }).sort({ createdAt: -1 }).toArray()) as unknown as LuckyDrawEntry[];
-  const entriesWithDetails = await Promise.all(
-    luckyDrawEntries.map(async (entry) => ({
-      ...entry,
-      draw: await getDrawById(entry.drawId),
-    })),
-  );
-  const winnerRecords = await collections.winnerRecords.find({ userId: user.id }).sort({ announcedAt: -1 }).toArray();
-
   return res.json({
     user: await serializeUser(user, req),
     referrals: await getReferralCounts(user.id),
     investments: investmentsWithPlans,
-    entries: entriesWithDetails,
     walletTransactions: await getWalletTransactionsForUser(user.id),
     rewardClaims: await getRewardClaimsForUser(user.id),
-    winnerRecords,
     withdrawals: await collections.withdrawalRequests.find({ userId: user.id }).sort({ createdAt: -1 }).toArray(),
     totalRiseCoins: await getUserRiseCoins(user.id),
   });
+});
+
+app.patch("/api/admin/users/:id/status", authenticate, requireAdmin, async (req: AuthenticatedRequest, res) => {
+  const body = parseSchema(adminUserStatusSchema, req.body, res);
+  if (!body) {
+    return;
+  }
+
+  const user = await getUserById(String(req.params.id));
+  if (!user || user.role !== "user") {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  // Banning/unbanning only gates login and new withdrawal requests -- wallet balance,
+  // transaction history, and referral commission accrual from the user's existing
+  // downline are never touched by this.
+  await collections.users.updateOne(
+    { id: user.id },
+    { $set: { status: body.status, updatedAt: nowIso() } },
+  );
+
+  await addAuditLog(
+    { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
+    body.status === "banned" ? "USER_BANNED" : "USER_UNBANNED",
+    "user",
+    user.id,
+    { status: body.status },
+  );
+
+  const updatedUser = await getUserById(user.id);
+  return res.json({ user: updatedUser ? await serializeUser(updatedUser, req) : null });
+});
+
+app.patch("/api/admin/users/:id", authenticate, requireAdmin, async (req: AuthenticatedRequest, res) => {
+  const body = parseSchema(adminUserEditSchema, req.body, res);
+  if (!body) {
+    return;
+  }
+
+  if (!body.name && !body.email && !body.phone) {
+    return res.status(400).json({ message: "Provide at least one field to update." });
+  }
+
+  const user = await getUserById(String(req.params.id));
+  if (!user || user.role !== "user") {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  const nextEmail = body.email?.trim();
+  if (nextEmail && nextEmail !== user.email) {
+    const existingEmail = await collections.users.findOne({ email: nextEmail, id: { $ne: user.id } });
+    if (existingEmail) {
+      return res.status(409).json({ message: "A member with this email already exists." });
+    }
+  }
+
+  const update: Record<string, unknown> = { updatedAt: nowIso() };
+  if (body.name) update.name = body.name.trim();
+  if (nextEmail) update.email = nextEmail;
+  if (body.phone) update.phone = body.phone.trim();
+
+  await collections.users.updateOne({ id: user.id }, { $set: update });
+
+  await addAuditLog(
+    { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
+    "USER_UPDATED",
+    "user",
+    user.id,
+    update,
+  );
+
+  const updatedUser = await getUserById(user.id);
+  return res.json({ user: updatedUser ? await serializeUser(updatedUser, req) : null });
 });
 
 app.get("/api/admin/payments", authenticate, requireAdmin, async (req, res) => {
@@ -3249,11 +3223,7 @@ app.get("/api/admin/payments", authenticate, requireAdmin, async (req, res) => {
   const items = await Promise.all(payments.map(async (payment) => {
     const user = await getUserById(payment.userId);
     const plan = payment.planId ? await getPlanById(payment.planId) : null;
-    const draw = payment.drawId ? await getDrawById(payment.drawId) : null;
-    const ticketId = payment.channel === "lucky_draw"
-      ? (await collections.luckyDrawEntries.findOne({ id: payment.referenceId }))?.ticketId ?? null
-      : null;
-    
+
     return {
       ...serializePaymentSubmission(payment, req),
       user: user ? { id: user.id, name: user.name, email: user.email } : null,
@@ -3265,8 +3235,6 @@ app.get("/api/admin/payments", authenticate, requireAdmin, async (req, res) => {
             riseCoins: plan.riseCoins,
           }
         : null,
-      draw,
-      ticketId,
     };
   }));
 
@@ -3314,40 +3282,10 @@ app.put("/api/admin/payments/:id", authenticate, requireAdmin, async (req, res) 
       if (plan) {
         await activateInvestmentOrder(user, plan, (payment as any).referenceId, payment.id);
       }
-    } else if ((payment as any).channel === "lucky_draw") {
-      await collections.luckyDrawEntries.updateOne(
-        { id: (payment as any).referenceId },
-        { $set: { status: "active", activatedAt: nowIso() } }
-      );
-      await addNotification(
-        (payment as any).userId,
-        "payment",
-        "Lucky draw entry approved",
-        "Your lucky draw entry has been activated. Good luck!",
-      );
-      
-      const referrer = await getUserById(user.referredByUserId);
-      if (referrer) {
-        await addWalletCredit(
-          referrer.id,
-          "lucky_draw_commission",
-          roundCurrency(((payment as any).amount * 5) / 100),
-          `Commission from ${user.name}'s lucky draw entry`,
-          payment.id,
-          "lucky_draw",
-        );
-      }
-      
-      await recomputeUserAccountType((payment as any).userId);
     }
   } else {
     if ((payment as any).channel === "investment") {
       await collections.investmentOrders.updateOne(
-        { id: (payment as any).referenceId },
-        { $set: { status: "rejected", rejectedAt: nowIso() } }
-      );
-    } else if ((payment as any).channel === "lucky_draw") {
-      await collections.luckyDrawEntries.updateOne(
         { id: (payment as any).referenceId },
         { $set: { status: "rejected", rejectedAt: nowIso() } }
       );
@@ -3442,7 +3380,8 @@ app.patch(
       referralCode: generateReferralCode(),
       referredByUserId: accountRequest.resolvedReferrerUserId,
       referralLinkEnabled: true,
-      accountType: "prospect",
+      accountType: "investor",
+      status: "active",
       walletBalance: 0,
       createdAt,
       updatedAt: createdAt,
@@ -3503,195 +3442,6 @@ app.patch(
     return res.json({ request: updated, user: await serializeUser(newUser, req) });
   },
 );
-
-app.get("/api/admin/draws", authenticate, requireAdmin, async (_req, res) => {
-  const draws = await collections.luckyDraws.find({}).toArray();
-  
-  const drawsWithStats = await Promise.all(draws.map(async (draw: any) => {
-    const entries = await collections.luckyDrawEntries.find({ drawId: draw.id }).toArray();
-    const activeEntries = entries.filter((entry: any) => entry.status === "active");
-    const pendingEntries = entries.filter((entry: any) => entry.status === "pending");
-    const rejectedEntries = entries.filter((entry: any) => entry.status === "rejected");
-    const winnerEntries = entries.filter((entry: any) => entry.status === "winner");
-    
-    return {
-      ...draw,
-      totalEntries: entries.length,
-      activeEntries: activeEntries.length,
-      pendingEntries: pendingEntries.length,
-      rejectedEntries: rejectedEntries.length,
-      winners: winnerEntries.length,
-    };
-  }));
-
-  const rawEntries = (await collections.luckyDrawEntries.find({}).sort({ createdAt: -1 }).toArray()) as unknown as LuckyDrawEntry[];
-  const entries = await Promise.all(
-    rawEntries.map(async (entry) => {
-      const [draw, user, payment] = await Promise.all([
-        getDrawById(entry.drawId),
-        getUserById(entry.userId),
-        collections.paymentSubmissions.findOne({ id: entry.paymentId }),
-      ]);
-      const typedPayment = payment as unknown as PaymentSubmission | null;
-
-      return {
-        id: entry.id,
-        ticketId: entry.ticketId,
-        status: entry.status,
-        rewardAmount: entry.rewardAmount,
-        draw: draw ? { id: draw.id, title: draw.title } : null,
-        user: user ? { id: user.id, name: user.name, email: user.email } : null,
-        payment: typedPayment
-          ? {
-              id: typedPayment.id,
-              status: typedPayment.status,
-              manualTransactionId: typedPayment.manualTransactionId,
-            }
-          : null,
-      };
-    }),
-  );
-
-  return res.json({
-    draws: drawsWithStats,
-    entries,
-  });
-});
-
-app.put("/api/admin/draws/:id", authenticate, requireAdmin, async (req, res) => {
-  const body = parseSchema(drawUpdateSchema, req.body, res);
-  if (!body) {
-    return;
-  }
-
-  const draw = await getDrawById(String(req.params.id));
-  if (!draw) {
-    return res.status(404).json({ message: "Lucky draw not found." });
-  }
-
-  const normalizedDrawDate = new Date(body.drawDate);
-  if (Number.isNaN(normalizedDrawDate.getTime())) {
-    return res.status(400).json({ message: "Invalid draw date." });
-  }
-
-  await collections.luckyDraws.updateOne(
-    { id: draw.id },
-    { $set: { drawDate: normalizedDrawDate.toISOString(), updatedAt: nowIso() } },
-  );
-
-  await addAuditLog(
-    { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
-    "DRAW_DATE_UPDATED",
-    "lucky_draw",
-    draw.id,
-    { drawDate: normalizedDrawDate.toISOString() },
-  );
-
-  return res.json({
-    draw: {
-      ...draw,
-      drawDate: normalizedDrawDate.toISOString(),
-    },
-  });
-});
-
-app.post(
-  "/api/admin/draws/:id/winners",
-  authenticate,
-  requireAdmin,
-  async (req: AuthenticatedRequest, res) => {
-    const body = parseSchema(winnerSelectionSchema, req.body, res);
-    if (!body) {
-      return;
-    }
-
-    const draw = await getDrawById(String(req.params.id));
-    if (!draw) {
-      return res.status(404).json({ message: "Lucky draw not found." });
-    }
-
-    const actor = req.authUser!;
-    const createdWinners: WinnerRecord[] = [];
-
-    for (const entryId of body.entryIds) {
-      const entry = await collections.luckyDrawEntries.findOne({ id: entryId, drawId: (draw as any).id });
-      if (!entry) {
-        return res.status(404).json({ message: `Entry ${entryId} was not found in this draw.` });
-      }
-
-      if ((entry as any).status === "winner") {
-        continue;
-      }
-
-      const user = await getUserById((entry as any).userId);
-      if (!user) {
-        continue;
-      }
-
-      const winner: WinnerRecord = {
-        id: generateId("WIN"),
-        drawId: (draw as any).id,
-        entryId: entry.id,
-        userId: (user as any).id,
-        rewardAmount: roundCurrency(body.rewardAmount),
-        note: body.note,
-        announcedByUserId: actor.id,
-        announcedAt: nowIso(),
-      };
-
-      await collections.luckyDrawEntries.updateOne(
-        { id: entry.id },
-        { $set: { status: "winner", rewardAmount: winner.rewardAmount } }
-      );
-      await addWalletCredit(
-        (user as any).id,
-        "winner_reward",
-        winner.rewardAmount,
-        `Lucky draw reward credited for ticket ${(entry as any).ticketId}`,
-        winner.id,
-        "winner_record",
-      );
-      await addNotification(
-        (user as any).id,
-        "reward",
-        "Lucky draw reward credited",
-        `You won Rs ${winner.rewardAmount.toLocaleString()} in ${(draw as any).title}.`,
-      );
-      await collections.winnerRecords.insertOne(winner);
-      await recomputeUserAccountType((user as any).id);
-      createdWinners.push(winner);
-    }
-
-    await collections.luckyDraws.updateOne(
-      { id: (draw as any).id },
-      { $set: { status: "completed", updatedAt: nowIso() } }
-    );
-    await addAuditLog(
-      { userId: actor.id, email: actor.email, role: actor.role },
-      "DRAW_WINNERS_SELECTED",
-      "lucky_draw",
-      draw.id,
-      { winners: createdWinners.length, rewardAmount: body.rewardAmount },
-    );
-
-    return res.status(201).json({
-      draw: draw as any,
-      winners: createdWinners,
-    });
-  },
-);
-
-app.get("/api/admin/winners", authenticate, requireAdmin, async (_req, res) => {
-  const winnerRecords = await collections.winnerRecords.find({}).toArray();
-  const items = await Promise.all(winnerRecords.map(async (winner: any) => ({
-    ...winner,
-    user: await getUserById(winner.userId),
-    draw: await getDrawById(winner.drawId),
-    entry: await collections.luckyDrawEntries.findOne({ id: winner.entryId }) ?? null,
-  })));
-
-  return res.json({ items });
-});
 
 app.get("/api/admin/rewards", authenticate, requireAdmin, async (_req, res) => {
   const settings = await getPublicSettings();
@@ -4017,12 +3767,10 @@ app.post(
       paymentSubmissions,
       investmentOrders,
       walletTransactions,
-      luckyDrawEntries,
       withdrawalRequests,
       notifications,
       auditLogs,
       rewardClaims,
-      winnerRecords,
       accountCreationRequests,
       activityFeed,
       trainingSeatConfirmations,
@@ -4031,12 +3779,10 @@ app.post(
       collections.paymentSubmissions.deleteMany({}),
       collections.investmentOrders.deleteMany({}),
       collections.walletTransactions.deleteMany({}),
-      collections.luckyDrawEntries.deleteMany({}),
       collections.withdrawalRequests.deleteMany({}),
       collections.notifications.deleteMany({}),
       collections.auditLogs.deleteMany({}),
       collections.rewardClaims.deleteMany({}),
-      collections.winnerRecords.deleteMany({}),
       collections.accountCreationRequests.deleteMany({}),
       collections.activityFeed.deleteMany({}),
       collections.trainingSeatConfirmations.deleteMany({}),
@@ -4047,12 +3793,10 @@ app.post(
       paymentSubmissions: paymentSubmissions.deletedCount ?? 0,
       investmentOrders: investmentOrders.deletedCount ?? 0,
       walletTransactions: walletTransactions.deletedCount ?? 0,
-      luckyDrawEntries: luckyDrawEntries.deletedCount ?? 0,
       withdrawalRequests: withdrawalRequests.deletedCount ?? 0,
       notifications: notifications.deletedCount ?? 0,
       auditLogs: auditLogs.deletedCount ?? 0,
       rewardClaims: rewardClaims.deletedCount ?? 0,
-      winnerRecords: winnerRecords.deletedCount ?? 0,
       accountCreationRequests: accountCreationRequests.deletedCount ?? 0,
       activityFeed: activityFeed.deletedCount ?? 0,
       trainingSeatConfirmations: trainingSeatConfirmations.deletedCount ?? 0,
@@ -4091,8 +3835,6 @@ function sendApiInfo(_req: express.Request, res: express.Response) {
         dashboard: "GET /api/user/dashboard",
         investments: "GET /api/user/investments",
         joinOptions: "GET /api/user/join-options",
-        luckyDraw: "GET /api/user/lucky-draw",
-        luckyDrawEntries: "POST /api/user/lucky-draw-entries",
         referrals: "GET /api/user/referrals",
         profile: "PUT /api/user/profile",
         feedback: "POST /api/user/feedback",
@@ -4111,6 +3853,8 @@ function sendApiInfo(_req: express.Request, res: express.Response) {
       admin: {
         users: "GET /api/admin/users",
         userDetail: "GET /api/admin/users/:id",
+        updateUserStatus: "PATCH /api/admin/users/:id/status",
+        updateUser: "PATCH /api/admin/users/:id",
         plans: "GET /api/admin/plans",
         createPlan: "POST /api/admin/plans",
         updatePlan: "PUT /api/admin/plans/:id",
@@ -4119,9 +3863,6 @@ function sendApiInfo(_req: express.Request, res: express.Response) {
         updatePayment: "PUT /api/admin/payments/:id",
         feedbacks: "GET /api/admin/feedbacks",
         markFeedbackRead: "PUT /api/admin/feedbacks/:id/read",
-        draws: "GET /api/admin/draws",
-        selectWinners: "POST /api/admin/draws/:id/winners",
-        winners: "GET /api/admin/winners",
         settings: "GET /api/admin/settings",
         updateSettings: "PUT /api/admin/settings",
         transactions: "GET /api/admin/transactions",
