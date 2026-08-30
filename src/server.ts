@@ -339,7 +339,7 @@ type AccountCreationRequest = {
   referralCode: string | null;
   resolvedReferrerUserId: string | null;
   paymentNumber: string;
-  paymentMethodType: PaymentMethodType;
+  paymentMethodType: PaymentMethodType | null;
   paymentScreenshotBase64: string;
   paymentScreenshotMimeType: string;
   status: AccountRequestStatus;
@@ -516,17 +516,39 @@ const settingsSchema = z.object({
   }),
   enableRegistrations: z.boolean(),
   maintenanceMode: z.boolean(),
-  paymentMethods: z.array(
-    z.object({
-      id: z.string().trim().min(1).optional(),
-      type: z.enum(["easypaisa", "jazzcash", "bank", "binance"]),
-      label: z.string().trim().min(1),
-      accountNumber: z.string().trim().min(1),
-      accountHolderName: z.string().trim().min(1),
-      extraInstructions: z.string().trim().optional().default(""),
-      active: z.boolean().optional().default(true),
+  paymentMethods: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1).optional(),
+        type: z.enum(["easypaisa", "jazzcash", "bank", "binance"]),
+        label: z.string().trim().min(1),
+        accountNumber: z.string().trim().default(""),
+        accountHolderName: z.string().trim().default(""),
+        extraInstructions: z.string().trim().optional().default(""),
+        active: z.boolean().optional().default(true),
+      }),
+    )
+    .superRefine((methods, ctx) => {
+      methods.forEach((method, index) => {
+        if (!method.active) {
+          return;
+        }
+        if (!method.accountNumber) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index, "accountNumber"],
+            message: "Account number is required for an active payment method.",
+          });
+        }
+        if (!method.accountHolderName) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index, "accountHolderName"],
+            message: "Account holder name is required for an active payment method.",
+          });
+        }
+      });
     }),
-  ),
   adminWhatsApp: z.string().trim().min(3),
   usdExchangeRate: z.number().positive(),
   referralRules: z.object({
@@ -593,6 +615,14 @@ const accountRequestSchema = z.object({
   referralCode: z.string().trim().optional(),
   paymentNumber: z.string().trim().min(3),
   paymentMethodType: z.enum(["easypaisa", "jazzcash", "bank", "binance"]),
+});
+
+const adminCreateMemberDirectSchema = z.object({
+  newMemberName: z.string().trim().min(3),
+  newMemberEmail: z.string().trim().email(),
+  newMemberMobile: z.string().trim().min(10),
+  planId: z.string().trim().min(1),
+  referralCode: z.string().trim().optional(),
 });
 
 const accountRequestDecisionSchema = z.object({
@@ -1476,6 +1506,59 @@ async function activateInvestmentOrder(
     `${plan.name} has been activated. You earned ${plan.riseCoins} Rise Coins toward your reward ranks.`,
   );
   await distributeInvestmentCommissions(user, plan, referenceId);
+}
+
+// Shared account-creation path used both by the account-creation-request approval flow
+// (PATCH /api/admin/account-requests/:id) and the admin direct-create flow
+// (POST /api/admin/users/create-direct): creates the member's User record, opens their
+// investment order for the chosen plan, activates it via activateInvestmentOrder (which
+// handles the "Investment approved" notification and referral Rise Coins/commission
+// distribution), and posts the same public activity-feed entry as a normal approved signup.
+async function createAndActivateMemberAccount(
+  details: { name: string; email: string; mobile: string; referredByUserId: string | null },
+  plan: Plan,
+  referenceId: string,
+): Promise<{ user: User; order: InvestmentOrder }> {
+  const createdAt = nowIso();
+  const newUser: User = {
+    id: generateId("USER"),
+    role: "user",
+    name: details.name,
+    email: details.email,
+    phone: details.mobile,
+    passwordHash: await hashPassword(details.mobile),
+    referralCode: generateReferralCode(),
+    referredByUserId: details.referredByUserId,
+    referralLinkEnabled: true,
+    accountType: "investor",
+    status: "active",
+    walletBalance: 0,
+    createdAt,
+    updatedAt: createdAt,
+    lastLoginAt: null,
+  };
+  await collections.users.insertOne(newUser);
+
+  const order: InvestmentOrder = {
+    id: generateId("INV"),
+    userId: newUser.id,
+    planId: plan.id,
+    status: "pending",
+    createdAt,
+    activatedAt: null,
+    rejectedAt: null,
+  };
+  await collections.investmentOrders.insertOne(order);
+
+  await activateInvestmentOrder(newUser, plan, order.id, referenceId);
+
+  await addActivityFeedEntry({
+    type: "signup",
+    name: newUser.name,
+    planAmount: plan.price,
+  });
+
+  return { user: newUser, order };
 }
 
 function calculateInvestmentMetrics(order: InvestmentOrder, plan: Plan) {
@@ -3369,41 +3452,20 @@ app.patch(
       return res.status(404).json({ message: "Plan for this request was not found." });
     }
 
-    const createdAt = nowIso();
-    const newUser: User = {
-      id: generateId("USER"),
-      role: "user",
-      name: accountRequest.newMemberName,
-      email: accountRequest.newMemberEmail,
-      phone: accountRequest.newMemberMobile,
-      passwordHash: await hashPassword(accountRequest.newMemberMobile),
-      referralCode: generateReferralCode(),
-      referredByUserId: accountRequest.resolvedReferrerUserId,
-      referralLinkEnabled: true,
-      accountType: "investor",
-      status: "active",
-      walletBalance: 0,
-      createdAt,
-      updatedAt: createdAt,
-      lastLoginAt: null,
-    };
-    await collections.users.insertOne(newUser);
-
-    const order: InvestmentOrder = {
-      id: generateId("INV"),
-      userId: newUser.id,
-      planId: plan.id,
-      status: "pending",
-      createdAt,
-      activatedAt: null,
-      rejectedAt: null,
-    };
-    await collections.investmentOrders.insertOne(order);
-
     // Payment was already verified by admin as part of reviewing this request, so the
-    // investment order is activated immediately using the same shared activation path
-    // (notifications + referral Rise Coins/commission distribution) as a normal approved payment.
-    await activateInvestmentOrder(newUser, plan, order.id, accountRequest.id);
+    // account is created and the investment order activated immediately using the same
+    // shared account-creation path (notifications + referral Rise Coins/commission
+    // distribution + activity feed) as the admin direct-create flow.
+    const { user: newUser } = await createAndActivateMemberAccount(
+      {
+        name: accountRequest.newMemberName,
+        email: accountRequest.newMemberEmail,
+        mobile: accountRequest.newMemberMobile,
+        referredByUserId: accountRequest.resolvedReferrerUserId,
+      },
+      plan,
+      accountRequest.id,
+    );
 
     await collections.accountCreationRequests.updateOne(
       { id: accountRequest.id },
@@ -3424,12 +3486,6 @@ app.patch(
       `The account for ${accountRequest.newMemberName} has been created and their ${plan.name} activated.`,
     );
 
-    await addActivityFeedEntry({
-      type: "signup",
-      name: newUser.name,
-      planAmount: plan.price,
-    });
-
     await addAuditLog(
       { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
       "ACCOUNT_REQUEST_APPROVED",
@@ -3440,6 +3496,107 @@ app.patch(
 
     const updated = await collections.accountCreationRequests.findOne({ id: accountRequest.id });
     return res.json({ request: updated, user: await serializeUser(newUser, req) });
+  },
+);
+
+// Lets the admin create and immediately activate a member account directly, without
+// routing through an existing member's POST /api/user/account-requests submission. This
+// is the only way to create the very first member account after a fresh database wipe
+// (or any account without going through another member), since the member-facing login
+// blocks admin-role logins and account requests otherwise require an existing member to
+// submit them. No payment fields are required -- the admin is directly vouching for the
+// account -- so the accountCreationRequests pending-review step is skipped entirely, but
+// a record is still inserted (pre-approved, with the admin as both requester and
+// reviewer) so this shows up in the Account Requests history for a consistent audit trail.
+app.post(
+  "/api/admin/users/create-direct",
+  authenticate,
+  requireAdmin,
+  async (req: AuthenticatedRequest, res) => {
+    const body = parseSchema(adminCreateMemberDirectSchema, req.body, res);
+    if (!body) {
+      return;
+    }
+
+    const admin = await getUserById(req.authUser!.id);
+    if (!admin) {
+      return res.status(404).json({ message: "Admin user not found." });
+    }
+
+    const plan = await getPlanById(body.planId);
+    if (!plan) {
+      return res.status(404).json({ message: "Selected plan was not found." });
+    }
+
+    const existingEmail = await collections.users.findOne({ email: body.newMemberEmail.trim() });
+    if (existingEmail) {
+      return res.status(409).json({ message: "A member with this email already exists." });
+    }
+
+    // A referral code is optional and, per rule, never blocks account creation even when
+    // it does not resolve to an existing user -- we just record whatever was given and
+    // separately track whether it resolved.
+    let resolvedReferrerUserId: string | null = null;
+    if (body.referralCode) {
+      const referrer = await collections.users.findOne({ referralCode: body.referralCode.trim() });
+      if (referrer) {
+        resolvedReferrerUserId = (referrer as unknown as User).id;
+      }
+    }
+
+    const accountRequest: AccountCreationRequest = {
+      id: generateId("ACR"),
+      requestedByUserId: admin.id,
+      requestedByName: admin.name,
+      requestedByEmail: admin.email,
+      newMemberName: body.newMemberName.trim(),
+      newMemberEmail: body.newMemberEmail.trim(),
+      newMemberMobile: body.newMemberMobile.trim(),
+      planId: plan.id,
+      planAmount: plan.price,
+      referralCode: body.referralCode?.trim() || null,
+      resolvedReferrerUserId,
+      paymentNumber: "",
+      paymentMethodType: null,
+      paymentScreenshotBase64: "",
+      paymentScreenshotMimeType: "",
+      status: "approved",
+      reviewNote: "Created directly by admin.",
+      createdAt: nowIso(),
+      reviewedAt: nowIso(),
+      reviewedByUserId: admin.id,
+    };
+    await collections.accountCreationRequests.insertOne(accountRequest);
+
+    // Same shared account-creation path (notifications + referral Rise Coins/commission
+    // distribution + activity feed) as the account-creation-request approval flow.
+    const { user: newUser } = await createAndActivateMemberAccount(
+      {
+        name: accountRequest.newMemberName,
+        email: accountRequest.newMemberEmail,
+        mobile: accountRequest.newMemberMobile,
+        referredByUserId: resolvedReferrerUserId,
+      },
+      plan,
+      accountRequest.id,
+    );
+
+    await addNotification(
+      newUser.id,
+      "system",
+      "Account created by admin",
+      `Your account has been created directly by an administrator and your ${plan.name} activated.`,
+    );
+
+    await addAuditLog(
+      { userId: admin.id, email: admin.email, role: admin.role },
+      "ADMIN_CREATED_MEMBER_DIRECT",
+      "user",
+      newUser.id,
+      { newMemberEmail: newUser.email, planId: plan.id },
+    );
+
+    return res.json({ user: await serializeUser(newUser, req) });
   },
 );
 
@@ -3869,6 +4026,7 @@ function sendApiInfo(_req: express.Request, res: express.Response) {
         auditLogs: "GET /api/admin/audit-logs",
         accountRequests: "GET /api/admin/account-requests",
         reviewAccountRequest: "PATCH /api/admin/account-requests/:id",
+        createMemberDirect: "POST /api/admin/users/create-direct",
         resetForLaunch: "POST /api/admin/system/reset-for-launch",
       },
     },
