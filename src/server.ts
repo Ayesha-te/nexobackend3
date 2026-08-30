@@ -119,7 +119,8 @@ type WalletTransactionType =
   | "investment_commission"
   | "referral_commission"
   | "rise_coins_reward"
-  | "withdrawal";
+  | "withdrawal"
+  | "admin_adjustment";
 
 type NotificationType = "system" | "payment" | "commission" | "reward" | "withdrawal";
 
@@ -634,6 +635,12 @@ const accountRequestDecisionSchema = z.object({
 
 const adminUserStatusSchema = z.object({
   status: z.enum(["active", "banned"]),
+});
+
+const adminWalletAdjustmentSchema = z.object({
+  amount: z.number().positive(),
+  direction: z.enum(["credit", "debit"]),
+  reason: z.string().trim().min(3),
 });
 
 const adminUserEditSchema = z.object({
@@ -3260,6 +3267,49 @@ app.patch("/api/admin/users/:id/status", authenticate, requireAdmin, async (req:
 
   const updatedUser = await getUserById(user.id);
   return res.json({ user: updatedUser ? await serializeUser(updatedUser, req) : null });
+});
+
+app.post("/api/admin/users/:id/wallet-adjustment", authenticate, requireAdmin, async (req: AuthenticatedRequest, res) => {
+  const body = parseSchema(adminWalletAdjustmentSchema, req.body, res);
+  if (!body) {
+    return;
+  }
+
+  const user = await getUserById(String(req.params.id));
+  if (!user || user.role !== "user") {
+    return res.status(404).json({ message: "User not found." });
+  }
+
+  if (body.direction === "debit") {
+    const currentBalance = await getWalletBalance(user.id);
+    if (roundCurrency(currentBalance - body.amount) < 0) {
+      return res.status(400).json({ message: "Adjustment would take the wallet balance below zero." });
+    }
+  }
+
+  const reason = body.reason.trim();
+  const transaction =
+    body.direction === "credit"
+      ? await addWalletCredit(user.id, "admin_adjustment", body.amount, reason, user.id, "admin_adjustment")
+      : await addWalletDebit(user.id, "admin_adjustment", body.amount, reason, user.id, "admin_adjustment");
+
+  await addNotification(
+    user.id,
+    "system",
+    "Wallet balance adjusted",
+    `Your wallet balance was adjusted by an admin: ${reason}`,
+  );
+
+  await addAuditLog(
+    { userId: req.authUser!.id, email: req.authUser!.email, role: req.authUser!.role },
+    "ADMIN_WALLET_ADJUSTMENT",
+    "user",
+    user.id,
+    { amount: body.amount, direction: body.direction, reason },
+  );
+
+  const newBalance = await getWalletBalance(user.id);
+  return res.json({ transaction, newBalance });
 });
 
 app.patch("/api/admin/users/:id", authenticate, requireAdmin, async (req: AuthenticatedRequest, res) => {
