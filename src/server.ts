@@ -287,6 +287,7 @@ type PaymentMethod = {
   label: string;
   accountNumber: string;
   accountHolderName: string;
+  bankName?: string;
   extraInstructions: string;
   active: boolean;
 };
@@ -524,6 +525,7 @@ const settingsSchema = z.object({
         label: z.string().trim().min(1),
         accountNumber: z.string().trim().default(""),
         accountHolderName: z.string().trim().default(""),
+        bankName: z.string().trim().optional().default(""),
         extraInstructions: z.string().trim().optional().default(""),
         active: z.boolean().optional().default(true),
       }),
@@ -845,6 +847,7 @@ const DEFAULT_PAYMENT_METHODS: PaymentMethod[] = [
     label: "EasyPaisa",
     accountNumber: DEFAULT_ACCOUNT_NUMBER,
     accountHolderName: DEFAULT_ACCOUNT_NAME,
+    bankName: "",
     extraInstructions: DEFAULT_PAYMENT_INSTRUCTIONS,
     active: true,
   },
@@ -854,6 +857,7 @@ const DEFAULT_PAYMENT_METHODS: PaymentMethod[] = [
     label: "JazzCash",
     accountNumber: "",
     accountHolderName: "",
+    bankName: "",
     extraInstructions: "",
     active: false,
   },
@@ -863,6 +867,7 @@ const DEFAULT_PAYMENT_METHODS: PaymentMethod[] = [
     label: "Bank Transfer",
     accountNumber: "",
     accountHolderName: "",
+    bankName: "",
     extraInstructions: "",
     active: false,
   },
@@ -872,6 +877,7 @@ const DEFAULT_PAYMENT_METHODS: PaymentMethod[] = [
     label: "Binance",
     accountNumber: "",
     accountHolderName: "",
+    bankName: "",
     extraInstructions: "",
     active: false,
   },
@@ -891,6 +897,7 @@ function normalizePaymentMethods(paymentMethods?: unknown): PaymentMethod[] {
     label: typeof raw?.label === "string" ? raw.label : "",
     accountNumber: typeof raw?.accountNumber === "string" ? raw.accountNumber : "",
     accountHolderName: typeof raw?.accountHolderName === "string" ? raw.accountHolderName : "",
+    bankName: typeof raw?.bankName === "string" ? raw.bankName : "",
     extraInstructions: typeof raw?.extraInstructions === "string" ? raw.extraInstructions : "",
     active: raw?.active !== false,
   }));
@@ -3753,6 +3760,7 @@ app.put("/api/admin/settings", authenticate, requireAdmin, async (req: Authentic
           label: method.label,
           accountNumber: method.accountNumber,
           accountHolderName: method.accountHolderName,
+          bankName: method.bankName ?? "",
           extraInstructions: method.extraInstructions ?? "",
           active: method.active ?? true,
         })),
