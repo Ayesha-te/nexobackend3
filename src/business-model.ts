@@ -175,23 +175,32 @@ export const DEFAULT_REFERRAL_RISE_COINS_RULES = {
 
 // Referral tiers are exposed to the frontend so it can explain the active rank ladder.
 export const DEFAULT_REFERRAL_TIERS = [
-  { title: "Starter", riseCoinsRequired: 30, directPercent: 28, indirectPercent: 16, teamPercent: 0 },
-  { title: "Vision", riseCoinsRequired: 1000, directPercent: 30, indirectPercent: 16, teamPercent: 0 },
-  { title: "Elevate", riseCoinsRequired: 4000, directPercent: 33, indirectPercent: 16, teamPercent: 3 },
-  { title: "Sapphire", riseCoinsRequired: 8000, directPercent: 35, indirectPercent: 16, teamPercent: 4 },
-  { title: "Ruby", riseCoinsRequired: 20000, directPercent: 37, indirectPercent: 17, teamPercent: 5 },
-  { title: "Diamond", riseCoinsRequired: 50000, directPercent: 39, indirectPercent: 17, teamPercent: 6 },
-  { title: "Platinum", riseCoinsRequired: 120000, directPercent: 41, indirectPercent: 18, teamPercent: 7 },
-  { title: "Elite", riseCoinsRequired: 250000, directPercent: 43, indirectPercent: 18, teamPercent: 8 },
-  { title: "Royal", riseCoinsRequired: 400000, directPercent: 46, indirectPercent: 18, teamPercent: 9 },
-  { title: "Imperial", riseCoinsRequired: 500000, directPercent: 48, indirectPercent: 18, teamPercent: 10 },
+  { title: "Starter", riseCoinsRequired: 300, directPercent: 30, indirectPercent: 8, teamPercent: 0 },
+  { title: "Bronze", riseCoinsRequired: 600, directPercent: 30, indirectPercent: 9, teamPercent: 0 },
+  { title: "Silver", riseCoinsRequired: 1000, directPercent: 32, indirectPercent: 9, teamPercent: 5 },
+  { title: "Gold", riseCoinsRequired: 1300, directPercent: 33, indirectPercent: 10, teamPercent: 6 },
+  { title: "Platinum", riseCoinsRequired: 1600, directPercent: 34, indirectPercent: 11, teamPercent: 7 },
+  { title: "Diamond", riseCoinsRequired: 2000, directPercent: 35, indirectPercent: 11, teamPercent: 8 },
+  { title: "Elite", riseCoinsRequired: 4000, directPercent: 36, indirectPercent: 12, teamPercent: 9 },
+  { title: "Royal", riseCoinsRequired: 8000, directPercent: 37, indirectPercent: 12, teamPercent: 10 },
+  { title: "Master", riseCoinsRequired: 15000, directPercent: 38, indirectPercent: 13, teamPercent: 10 },
+  { title: "Superior", riseCoinsRequired: 25000, directPercent: 39, indirectPercent: 13, teamPercent: 10 },
+  { title: "Champion", riseCoinsRequired: 50000, directPercent: 40, indirectPercent: 13, teamPercent: 10 },
+  { title: "Ultimate", riseCoinsRequired: 100000, directPercent: 40, indirectPercent: 14, teamPercent: 10 },
 ] as const;
 export const DEFAULT_REWARD_MILESTONES = [
-  { riseCoinsRequired: 30, rewardAmount: 0, title: "Level 1" },
-  { riseCoinsRequired: 1000, rewardAmount: 5000, title: "Level 2" },
-  { riseCoinsRequired: 4000, rewardAmount: 12000, title: "Level 3" },
-  { riseCoinsRequired: 8000, rewardAmount: 20000, title: "Level 4" },
-  { riseCoinsRequired: 20000, rewardAmount: 35000, title: "Level 5" },
+  { riseCoinsRequired: 300, rewardAmount: 1000, title: "Starter" },
+  { riseCoinsRequired: 600, rewardAmount: 1500, title: "Bronze" },
+  { riseCoinsRequired: 1000, rewardAmount: 2000, title: "Silver" },
+  { riseCoinsRequired: 1300, rewardAmount: 2500, title: "Gold" },
+  { riseCoinsRequired: 1600, rewardAmount: 3500, title: "Platinum" },
+  { riseCoinsRequired: 2000, rewardAmount: 5000, title: "Diamond" },
+  { riseCoinsRequired: 4000, rewardAmount: 7000, title: "Elite" },
+  { riseCoinsRequired: 8000, rewardAmount: 10000, title: "Royal" },
+  { riseCoinsRequired: 15000, rewardAmount: 12000, title: "Master" },
+  { riseCoinsRequired: 25000, rewardAmount: 18000, title: "Superior" },
+  { riseCoinsRequired: 50000, rewardAmount: 23000, title: "Champion" },
+  { riseCoinsRequired: 100000, rewardAmount: 30000, title: "Ultimate" },
 ] as const;
 
 export const DEFAULT_WITHDRAWAL_RULES = {
