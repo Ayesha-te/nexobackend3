@@ -60,7 +60,7 @@ export const DEFAULT_INVESTMENT_PLANS = [
       "Eligible for 3-level referral income",
       "Counts toward rank rewards",
     ],
-    featured: true,
+    featured: false,
     active: true,
   },
   {
@@ -92,7 +92,7 @@ export const DEFAULT_INVESTMENT_PLANS = [
       "Eligible for 3-level referral income",
       "Counts toward rank rewards",
     ],
-    featured: false,
+    featured: true,
     active: true,
   },
   {

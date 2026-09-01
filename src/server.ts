@@ -583,7 +583,13 @@ const settingsSchema = z.object({
   }),
 });
 
-const adminPlanSchema = z.object({
+const adminPlanSchema = z.preprocess((input) => {
+  if (input && typeof input === "object" && "riseCoins" not in input && "points" in input) {
+    const value = input as Record<string, unknown>;
+    return { ...value, riseCoins: value.points };
+  }
+  return input;
+}, z.object({
   name: z.string().trim().min(1),
   price: z.number().positive(),
   riseCoins: z.number().int().positive(),
@@ -593,7 +599,7 @@ const adminPlanSchema = z.object({
   benefits: z.array(z.string().trim()).optional().default([]),
   featured: z.boolean().optional().default(false),
   active: z.boolean().optional().default(true),
-});
+}));
 
 const profileSchema = z.object({
   name: z.string().trim().min(3),
@@ -2984,6 +2990,9 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
 });
 
 app.get("/api/admin/plans", authenticate, requireAdmin, async (_req, res) => {
+  // Keep the requested Featured plan consistent for existing databases as well as new seeds.
+  await collections.plans.updateMany({ id: "PLAN-2500" }, { $set: { featured: false } });
+  await collections.plans.updateMany({ id: "PLAN-4500" }, { $set: { featured: true } });
   return res.json({ items: await getAdminPlans() });
 });
 
