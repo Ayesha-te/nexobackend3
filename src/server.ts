@@ -2841,13 +2841,14 @@ app.get("/api/user/transactions", authenticate, async (req: AuthenticatedRequest
 
 // Admin routes
 app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) => {
-  const [rawUsers, rawPayments, rawWalletTransactions, rawRewardClaims, rawWithdrawalRequests, auditLogs] =
+  const [rawUsers, rawPayments, rawWalletTransactions, rawRewardClaims, rawWithdrawalRequests, rawInvestmentOrders, auditLogs] =
     await Promise.all([
       collections.users.find({ role: "user" }).toArray(),
       collections.paymentSubmissions.find({ channel: "investment" }).toArray(),
       collections.walletTransactions.find({}).toArray(),
       collections.rewardClaims.find({}).toArray(),
       collections.withdrawalRequests.find({}).toArray(),
+      collections.investmentOrders.find({ status: "active" }).toArray(),
       collections.auditLogs.find({}).limit(10).sort({ createdAt: -1 }).toArray(),
     ]);
   const users = rawUsers as unknown as User[];
@@ -2855,14 +2856,22 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
   const walletTransactions = rawWalletTransactions as unknown as WalletTransaction[];
   const rewardClaims = rawRewardClaims as unknown as RewardClaim[];
   const withdrawalRequests = rawWithdrawalRequests as unknown as WithdrawalRequest[];
+  const activeInvestmentOrders = rawInvestmentOrders as unknown as InvestmentOrder[];
 
   const totalRiseCoinsIssued = await Promise.all(users.map((user) => getUserRiseCoins(user.id))).then((totals) =>
     totals.reduce((sum, total) => sum + total, 0),
   );
 
-  const approvedInvestmentVolume = payments
+  const submittedInvestmentVolume = payments
     .filter((payment) => payment.status === "approved")
     .reduce((sum, payment) => sum + payment.amount, 0);
+  const activatedInvestmentVolume = await Promise.all(
+    activeInvestmentOrders.map(async (order) => {
+      const plan = await getPlanById(order.planId);
+      return plan?.price ?? 0;
+    }),
+  ).then((amounts) => amounts.reduce((sum, amount) => sum + amount, 0));
+  const approvedInvestmentVolume = Math.max(submittedInvestmentVolume, activatedInvestmentVolume);
   const pendingWithdrawalAmount = withdrawalRequests
     .filter((request) => request.status === "pending")
     .reduce((sum, request) => sum + request.amount, 0);
