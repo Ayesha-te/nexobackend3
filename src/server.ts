@@ -1802,6 +1802,8 @@ async function syncBusinessModel() {
   const seededPlanIds = seededPlans.map((plan) => plan.id);
   const existingPlans = await collections.plans.find({}).toArray();
   const existingById = new Map<string, any>();
+  const settingsRecord = await collections.settings.findOne({});
+  const shouldMigrateFeaturedPlan = settingsRecord?.featuredPlanMigrationV1 !== true;
 
   for (const rawPlan of existingPlans) {
     const id = typeof rawPlan?.id === "string" ? rawPlan.id : "";
@@ -1834,7 +1836,6 @@ async function syncBusinessModel() {
               ? existingPlan.level3Percent
               : plan.level3Percent,
           benefits: normalizePlanBenefits(plan.benefits, plan.riseCoins, plan.price),
-          featured: plan.featured,
           active: true,
           roiPercent: 0,
           durationDays: 0,
@@ -1843,9 +1844,16 @@ async function syncBusinessModel() {
           updatedAt: nowIso(),
           deletedAt: null,
         },
+        $setOnInsert: { featured: plan.featured },
       },
       { upsert: true },
     );
+  }
+
+  if (shouldMigrateFeaturedPlan) {
+    await collections.plans.updateMany({ id: "PLAN-2500" }, { $set: { featured: false } });
+    await collections.plans.updateMany({ id: "PLAN-4500" }, { $set: { featured: true } });
+    await collections.settings.updateOne({}, { $set: { featuredPlanMigrationV1: true } }, { upsert: true });
   }
 
   // Keep legacy plans for historical records but hide them from active plan listings.
