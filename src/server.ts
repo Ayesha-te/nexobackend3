@@ -521,7 +521,9 @@ const settingsSchema = z.object({
   paymentMethods: z
     .array(
       z.object({
-        id: z.string().trim().min(1).optional(),
+        // New payment methods are created with an empty client-side id; the
+        // server assigns the permanent id while saving settings.
+        id: z.string().trim().optional(),
         type: z.enum(["easypaisa", "jazzcash", "bank", "binance"]),
         label: z.string().trim().min(1),
         accountNumber: z.string().trim().default(""),
@@ -1803,7 +1805,7 @@ async function syncBusinessModel() {
   const existingPlans = await collections.plans.find({}).toArray();
   const existingById = new Map<string, any>();
   const settingsRecord = await collections.settings.findOne({});
-  const shouldMigrateFeaturedPlan = settingsRecord?.featuredPlanMigrationV1 !== true;
+  const shouldMigrateFeaturedPlan = settingsRecord?.featuredPlanMigrationV2 !== true;
 
   for (const rawPlan of existingPlans) {
     const id = typeof rawPlan?.id === "string" ? rawPlan.id : "";
@@ -1853,7 +1855,7 @@ async function syncBusinessModel() {
   if (shouldMigrateFeaturedPlan) {
     await collections.plans.updateMany({ id: "PLAN-2500" }, { $set: { featured: false } });
     await collections.plans.updateMany({ id: "PLAN-4500" }, { $set: { featured: true } });
-    await collections.settings.updateOne({}, { $set: { featuredPlanMigrationV1: true } }, { upsert: true });
+    await collections.settings.updateOne({}, { $set: { featuredPlanMigrationV2: true } }, { upsert: true });
   }
 
   // Keep legacy plans for historical records but hide them from active plan listings.
@@ -2998,9 +3000,6 @@ app.get("/api/admin/dashboard", authenticate, requireAdmin, async (_req, res) =>
 });
 
 app.get("/api/admin/plans", authenticate, requireAdmin, async (_req, res) => {
-  // Keep the requested Featured plan consistent for existing databases as well as new seeds.
-  await collections.plans.updateMany({ id: "PLAN-2500" }, { $set: { featured: false } });
-  await collections.plans.updateMany({ id: "PLAN-4500" }, { $set: { featured: true } });
   return res.json({ items: await getAdminPlans() });
 });
 
@@ -3028,6 +3027,10 @@ app.post("/api/admin/plans", authenticate, requireAdmin, async (req: Authenticat
     updatedAt: now,
     deletedAt: null,
   };
+
+  if (plan.featured) {
+    await collections.plans.updateMany({ id: { $ne: plan.id } }, { $set: { featured: false } });
+  }
 
   await collections.plans.insertOne(plan);
   await addAuditLog(
@@ -3077,6 +3080,10 @@ app.put("/api/admin/plans/:id", authenticate, requireAdmin, async (req: Authenti
     durationDays: 0,
     updatedAt: nowIso(),
   };
+
+  if (nextPlan.featured) {
+    await collections.plans.updateMany({ id: { $ne: planId } }, { $set: { featured: false } });
+  }
 
   await collections.plans.updateOne(
     { id: planId },
