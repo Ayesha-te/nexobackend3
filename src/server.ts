@@ -585,13 +585,7 @@ const settingsSchema = z.object({
   }),
 });
 
-const adminPlanSchema = z.preprocess((input) => {
-  if (input && typeof input === "object" && "riseCoins" not in input && "points" in input) {
-    const value = input as Record<string, unknown>;
-    return { ...value, riseCoins: value.points };
-  }
-  return input;
-}, z.object({
+const adminPlanSchema = z.object({
   name: z.string().trim().min(1),
   price: z.number().positive(),
   riseCoins: z.number().int().positive(),
@@ -601,7 +595,7 @@ const adminPlanSchema = z.preprocess((input) => {
   benefits: z.array(z.string().trim()).optional().default([]),
   featured: z.boolean().optional().default(false),
   active: z.boolean().optional().default(true),
-}));
+});
 
 const profileSchema = z.object({
   name: z.string().trim().min(3),
