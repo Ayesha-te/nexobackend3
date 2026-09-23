@@ -49,6 +49,16 @@ const DEFAULT_SUPPORT_PHONE_2 = "03057410110";
 const DEFAULT_SUPPORT_LOCATION = "Sargodha";
 const DEFAULT_ADMIN_PASSWORD = "admin123";
 const DEFAULT_PLATFORM_NAME = "NexoRise";
+const DEFAULT_ABOUT_US = {
+  intro:
+    "NexoRise is a growth-focused platform dedicated to helping individuals develop practical skills, build confidence, strengthen leadership abilities, and explore modern business opportunities.",
+  secondary:
+    "We believe that true growth comes through learning, consistency, teamwork, and continuous self-development.",
+  missionText:
+    "Empower individuals with practical knowledge, professional skills, leadership development, and growth opportunities.",
+  visionText: "Build a strong community of skilled, confident, responsible, and ambitious individuals.",
+  valuesText: "Integrity, Learning, Teamwork, Consistency, Leadership.",
+};
 const DEFAULT_ADMIN_WHATSAPP = "03057410110";
 const DEFAULT_USD_EXCHANGE_RATE = 280;
 const DEFAULT_ACCOUNT_NAME = "Sardar Laeiq Ahmed";
@@ -307,6 +317,13 @@ type Settings = {
   paymentMethods: PaymentMethod[];
   adminWhatsApp: string;
   usdExchangeRate: number;
+  aboutUs: {
+    intro: string;
+    secondary: string;
+    missionText: string;
+    visionText: string;
+    valuesText: string;
+  };
   referralRules: {
     level1Percent: number;
     level2Percent: number;
@@ -556,6 +573,13 @@ const settingsSchema = z.object({
     }),
   adminWhatsApp: z.string().trim().min(3),
   usdExchangeRate: z.number().positive(),
+  aboutUs: z.object({
+    intro: z.string().trim().min(1),
+    secondary: z.string().trim().optional().default(""),
+    missionText: z.string().trim().min(1),
+    visionText: z.string().trim().min(1),
+    valuesText: z.string().trim().min(1),
+  }),
   referralRules: z.object({
     level1Percent: z.number().min(0).max(100),
     level2Percent: z.number().min(0).max(100),
@@ -930,6 +954,13 @@ function normalizeSettings(settings?: Partial<Settings> | null): Settings {
       typeof settings?.usdExchangeRate === "number" && settings.usdExchangeRate > 0
         ? settings.usdExchangeRate
         : DEFAULT_USD_EXCHANGE_RATE,
+    aboutUs: {
+      intro: settings?.aboutUs?.intro ?? DEFAULT_ABOUT_US.intro,
+      secondary: settings?.aboutUs?.secondary ?? DEFAULT_ABOUT_US.secondary,
+      missionText: settings?.aboutUs?.missionText ?? DEFAULT_ABOUT_US.missionText,
+      visionText: settings?.aboutUs?.visionText ?? DEFAULT_ABOUT_US.visionText,
+      valuesText: settings?.aboutUs?.valuesText ?? DEFAULT_ABOUT_US.valuesText,
+    },
     referralRules: {
       level1Percent:
         settings?.referralRules?.level1Percent ?? DEFAULT_REFERRAL_RULES.level1Percent,
@@ -2433,6 +2464,7 @@ app.get("/api/public/site-info", async (_req, res) => {
     contactDetails: settings.contactDetails,
     adminWhatsApp: settings.adminWhatsApp,
     usdExchangeRate: settings.usdExchangeRate,
+    aboutUs: settings.aboutUs,
     paymentMethods: settings.paymentMethods.filter((method) => method.active),
     referralRules: settings.referralRules,
     referralRiseCoinsRules: settings.referralRiseCoinsRules,
@@ -3843,6 +3875,13 @@ app.put("/api/admin/settings", authenticate, requireAdmin, async (req: Authentic
         })),
         adminWhatsApp: body.adminWhatsApp,
         usdExchangeRate: body.usdExchangeRate,
+        aboutUs: {
+          intro: body.aboutUs.intro,
+          secondary: body.aboutUs.secondary ?? "",
+          missionText: body.aboutUs.missionText,
+          visionText: body.aboutUs.visionText,
+          valuesText: body.aboutUs.valuesText,
+        },
         referralRules: {
           level1Percent: body.referralRules.level1Percent,
           level2Percent: body.referralRules.level2Percent,
