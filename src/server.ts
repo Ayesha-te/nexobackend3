@@ -1827,101 +1827,81 @@ async function syncBusinessModel() {
   }));
 
   const seededPlanIds = seededPlans.map((plan) => plan.id);
-  const existingPlans = await collections.plans.find({}).toArray();
-  const existingById = new Map<string, any>();
   const settingsRecord = await collections.settings.findOne({});
   const shouldMigrateFeaturedPlan = settingsRecord?.featuredPlanMigrationV2 !== true;
+  // Seeding the 10 default plans and cleaning up legacy/orphaned plans must only ever
+  // happen ONCE (the first boot after this business model shipped). Doing it on every
+  // boot (which on a serverless host happens roughly every time the function cold-starts,
+  // e.g. after ~30 minutes idle) was clobbering admin's own plan edits back to the
+  // hardcoded defaults, and deleting any brand-new plan the admin had just created because
+  // it wasn't yet in `seededPlanIds`. From here on, plans are owned entirely by the
+  // database once seeded -- only the admin's own CRUD endpoints may change them.
+  const shouldRunOneTimePlanSeed = settingsRecord?.plansSeedMigrationV1 !== true;
 
-  for (const rawPlan of existingPlans) {
-    const id = typeof rawPlan?.id === "string" ? rawPlan.id : "";
-    if (id && !existingById.has(id)) {
-      existingById.set(id, rawPlan);
-    }
-  }
-
-  // Enforce the exact 7 poster plans as active plans (upsert by id).
-  for (const plan of seededPlans) {
-    const existingPlan = existingById.get(plan.id);
-
-    await collections.plans.updateOne(
-      { id: plan.id },
-      {
-        $set: {
-          name: plan.name,
-          price: plan.price,
-          riseCoins: plan.riseCoins,
-          level1Percent:
-            typeof existingPlan?.level1Percent === "number"
-              ? existingPlan.level1Percent
-              : plan.level1Percent,
-          level2Percent:
-            typeof existingPlan?.level2Percent === "number"
-              ? existingPlan.level2Percent
-              : plan.level2Percent,
-          level3Percent:
-            typeof existingPlan?.level3Percent === "number"
-              ? existingPlan.level3Percent
-              : plan.level3Percent,
+  if (shouldRunOneTimePlanSeed) {
+    // Insert the 10 default plans if missing. Uses insertOne (not upsert/$set) so it can
+    // NEVER overwrite a plan that already exists -- this only creates what's missing.
+    for (const plan of seededPlans) {
+      const alreadyExists = await collections.plans.findOne({ id: plan.id });
+      if (!alreadyExists) {
+        await collections.plans.insertOne({
+          ...plan,
           benefits: normalizePlanBenefits(plan.benefits, plan.riseCoins, plan.price),
           active: true,
           roiPercent: 0,
           durationDays: 0,
-          createdAt:
-            typeof existingPlan?.createdAt === "string" ? existingPlan.createdAt : nowIso(),
+          createdAt: nowIso(),
           updatedAt: nowIso(),
           deletedAt: null,
-        },
-        $setOnInsert: { featured: plan.featured },
+        });
+      }
+    }
+
+    // Keep legacy plans (from the old 7-plan business model) for historical records but
+    // hide them from active plan listings. One-time only, per the note above.
+    await collections.plans.updateMany(
+      {
+        id: { $nin: seededPlanIds },
+        active: { $ne: false },
+        $or: [{ deletedAt: { $exists: false } }, { deletedAt: null }],
       },
-      { upsert: true },
+      {
+        $set: {
+          active: false,
+          updatedAt: nowIso(),
+        },
+      },
     );
+
+    // Hard-delete any non-default plan that has zero investment orders, payment
+    // submissions, or account-creation requests referencing it -- one-time cleanup of
+    // stale test/legacy plans, since there's no history that depends on keeping them.
+    const nonDefaultPlans = await collections.plans
+      .find({ id: { $nin: seededPlanIds } })
+      .project({ id: 1 })
+      .toArray();
+    for (const rawPlan of nonDefaultPlans) {
+      const planId = typeof rawPlan.id === "string" ? rawPlan.id : "";
+      if (!planId) continue;
+
+      const [linkedInvestments, linkedPayments, linkedAccountRequests] = await Promise.all([
+        collections.investmentOrders.countDocuments({ planId }),
+        collections.paymentSubmissions.countDocuments({ planId }),
+        collections.accountCreationRequests.countDocuments({ planId }),
+      ]);
+
+      if (linkedInvestments === 0 && linkedPayments === 0 && linkedAccountRequests === 0) {
+        await collections.plans.deleteOne({ id: planId });
+      }
+    }
+
+    await collections.settings.updateOne({}, { $set: { plansSeedMigrationV1: true } }, { upsert: true });
   }
 
   if (shouldMigrateFeaturedPlan) {
     await collections.plans.updateMany({ id: "PLAN-2500" }, { $set: { featured: false } });
     await collections.plans.updateMany({ id: "PLAN-4500" }, { $set: { featured: true } });
     await collections.settings.updateOne({}, { $set: { featuredPlanMigrationV2: true } }, { upsert: true });
-  }
-
-  // Keep legacy plans for historical records but hide them from active plan listings.
-  await collections.plans.updateMany(
-    {
-      id: { $nin: seededPlanIds },
-      active: { $ne: false },
-      $or: [{ deletedAt: { $exists: false } }, { deletedAt: null }],
-    },
-    {
-      $set: {
-        active: false,
-        updatedAt: nowIso(),
-      },
-    },
-  );
-
-  // One-time cleanup (runs on every boot): plans that aren't part of the current 10-plan
-  // business model accumulate over time (old 7-plan model, admin-created test plans, etc.)
-  // and were previously only ever deactivated, never removed -- which is why the admin
-  // plan list could balloon well past 10. Hard-delete any non-default plan that has zero
-  // investment orders, payment submissions, or account-creation requests referencing it,
-  // since there is no history that depends on keeping it around. Plans with history are
-  // left as inactive/legacy records.
-  const nonDefaultPlans = await collections.plans
-    .find({ id: { $nin: seededPlanIds } })
-    .project({ id: 1 })
-    .toArray();
-  for (const rawPlan of nonDefaultPlans) {
-    const planId = typeof rawPlan.id === "string" ? rawPlan.id : "";
-    if (!planId) continue;
-
-    const [linkedInvestments, linkedPayments, linkedAccountRequests] = await Promise.all([
-      collections.investmentOrders.countDocuments({ planId }),
-      collections.paymentSubmissions.countDocuments({ planId }),
-      collections.accountCreationRequests.countDocuments({ planId }),
-    ]);
-
-    if (linkedInvestments === 0 && linkedPayments === 0 && linkedAccountRequests === 0) {
-      await collections.plans.deleteOne({ id: planId });
-    }
   }
 
   // Every real user now enters through the account-creation-request approval flow and is
